@@ -1,0 +1,36 @@
+{
+  "name": "@nocobase/plugin-logger-pro",
+  "displayName": "Logger Pro",
+  "displayName.zh-CN": "日志管理 Pro",
+  "description": "Enterprise-level server log console, dynamic configuration, user audit trail, and multi-channel alerting.",
+  "description.zh-CN": "企业级系统日志控制台、动态日志配置、用户操作审计日志、数据变更Diff对比及多渠道异常告警管理。",
+  "version": "0.1.0",
+  "main": "server.js",
+  "client": "client.js",
+  "nocobase": {
+    "supportedVersions": [
+      "2.x"
+    ]
+  },
+  "peerDependencies": {
+    "@nocobase/actions": "2.x",
+    "@nocobase/client": "2.x",
+    "@nocobase/client-v2": "2.x",
+    "@nocobase/database": "2.x",
+    "@nocobase/logger": "2.x",
+    "@nocobase/server": "2.x",
+    "@nocobase/test": "2.x",
+    "@nocobase/utils": "2.x"
+  },
+  "devDependencies": {
+    "@types/tar-fs": "^2.0.2",
+    "tar-fs": "^3.0.4"
+  },
+  "keywords": [
+    "Logging",
+    "Audit",
+    "Monitoring",
+    "Alerting"
+  ],
+  "license": "AGPL-3.0"
+}

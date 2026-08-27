@@ -11,6 +11,7 @@ import {
   Drawer,
   message,
   Tooltip,
+  Spin,
 } from 'antd';
 import {
   SearchOutlined,
@@ -52,10 +53,12 @@ export const AuditLogTab: React.FC = () => {
   // 差异对比弹窗
   const [selectedRecord, setSelectedRecord] = useState<any>(null);
   const [diffModalVisible, setDiffModalVisible] = useState(false);
+  const [diffLoading, setDiffLoading] = useState(false);
 
   // 详情抽屉（查看 Params / Error）
   const [drawerRecord, setDrawerRecord] = useState<any>(null);
   const [drawerVisible, setDrawerVisible] = useState(false);
+  const [drawerLoading, setDrawerLoading] = useState(false);
 
   // 系统全部 Collections 列表
   const [collectionsList, setCollectionsList] = useState<any[]>([]);
@@ -68,7 +71,7 @@ export const AuditLogTab: React.FC = () => {
     } catch {}
   };
 
-  // 2. 加载审计日志列表
+  // 2. 加载审计日志列表 (字段瘦身优化：不加载大体积快照字段，彻底避免 MySQL 内存排序溢出)
   const fetchAuditLogs = async (currentPage = page, currentPageSize = pageSize) => {
     setLoading(true);
     try {
@@ -95,6 +98,21 @@ export const AuditLogTab: React.FC = () => {
           pageSize: currentPageSize,
           filter,
           sort: ['-createdAt'],
+          fields: [
+            'id',
+            'createdAt',
+            'userUsername',
+            'userNickname',
+            'collectionName',
+            'actionName',
+            'recordId',
+            'path',
+            'method',
+            'ip',
+            'statusCode',
+            'durationMs',
+            'reqId',
+          ],
         },
       });
 
@@ -106,6 +124,48 @@ export const AuditLogTab: React.FC = () => {
       message.error(`加载审计日志失败: ${err.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 3. 打开 Diff 对比弹窗 (按需异步获取完整快照)
+  const handleOpenDiff = async (record: any) => {
+    setSelectedRecord(record);
+    setDiffModalVisible(true);
+    if (!record.diff && !record.beforeData && !record.afterData) {
+      setDiffLoading(true);
+      try {
+        const res = await api.request({
+          url: 'logger_audit_logs:get',
+          params: { filterByTk: record.id },
+        });
+        const fullRecord = res?.data?.data || res?.data || record;
+        setSelectedRecord(fullRecord);
+      } catch (err: any) {
+        message.error(`获取变更详情失败: ${err.message}`);
+      } finally {
+        setDiffLoading(false);
+      }
+    }
+  };
+
+  // 4. 打开详情抽屉 (按需异步获取完整参数及错误)
+  const handleOpenDrawer = async (record: any) => {
+    setDrawerRecord(record);
+    setDrawerVisible(true);
+    if (!record.params && !record.errorMessage && !record.userAgent) {
+      setDrawerLoading(true);
+      try {
+        const res = await api.request({
+          url: 'logger_audit_logs:get',
+          params: { filterByTk: record.id },
+        });
+        const fullRecord = res?.data?.data || res?.data || record;
+        setDrawerRecord(fullRecord);
+      } catch (err: any) {
+        message.error(`获取报文详情失败: ${err.message}`);
+      } finally {
+        setDrawerLoading(false);
+      }
     }
   };
 
@@ -319,27 +379,19 @@ export const AuditLogTab: React.FC = () => {
                   >
                     追踪
                   </Button>
-                  {(r.diff || r.beforeData || r.afterData) && (
-                    <Button
-                      size="small"
-                      type="link"
-                      icon={<DiffOutlined />}
-                      onClick={() => {
-                        setSelectedRecord(r);
-                        setDiffModalVisible(true);
-                      }}
-                    >
-                      Diff
-                    </Button>
-                  )}
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<DiffOutlined />}
+                    onClick={() => handleOpenDiff(r)}
+                  >
+                    Diff
+                  </Button>
                   <Button
                     size="small"
                     type="link"
                     icon={<EyeOutlined />}
-                    onClick={() => {
-                      setDrawerRecord(r);
-                      setDrawerVisible(true);
-                    }}
+                    onClick={() => handleOpenDrawer(r)}
                   >
                     详情
                   </Button>
@@ -358,6 +410,7 @@ export const AuditLogTab: React.FC = () => {
           setSelectedRecord(null);
         }}
         record={selectedRecord}
+        loading={diffLoading}
       />
 
       {/* 参数与错误详情抽屉 */}
@@ -371,32 +424,34 @@ export const AuditLogTab: React.FC = () => {
         }}
         open={drawerVisible}
       >
-        {drawerRecord && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {drawerRecord.errorMessage && (
+        <Spin spinning={drawerLoading}>
+          {drawerRecord && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {drawerRecord.errorMessage && (
+                <div>
+                  <h4 style={{ color: '#ff4d4f', fontWeight: 600 }}>❌ 异常错误信息</h4>
+                  <pre style={{ background: '#fff1f0', padding: 12, borderRadius: 6, color: '#cf1322', whiteSpace: 'pre-wrap' }}>
+                    {drawerRecord.errorMessage}
+                  </pre>
+                </div>
+              )}
+
               <div>
-                <h4 style={{ color: '#ff4d4f', fontWeight: 600 }}>❌ 异常错误信息</h4>
-                <pre style={{ background: '#fff1f0', padding: 12, borderRadius: 6, color: '#cf1322', whiteSpace: 'pre-wrap' }}>
-                  {drawerRecord.errorMessage}
+                <h4 style={{ fontWeight: 600 }}>📦 请求参数 (Params / Values)</h4>
+                <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 6, maxHeight: 300, overflow: 'auto', fontSize: 12 }}>
+                  {JSON.stringify(drawerRecord.params, null, 2) || '(空)'}
                 </pre>
               </div>
-            )}
 
-            <div>
-              <h4 style={{ fontWeight: 600 }}>📦 请求参数 (Params / Values)</h4>
-              <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 6, maxHeight: 300, overflow: 'auto', fontSize: 12 }}>
-                {JSON.stringify(drawerRecord.params, null, 2) || '(空)'}
-              </pre>
-            </div>
-
-            <div>
-              <h4 style={{ fontWeight: 600 }}>🌐 客户端 User-Agent</h4>
-              <div style={{ background: '#fafafa', padding: 12, borderRadius: 6, fontSize: 12, color: '#595959', wordBreak: 'break-all' }}>
-                {drawerRecord.userAgent || '-'}
+              <div>
+                <h4 style={{ fontWeight: 600 }}>🌐 客户端 User-Agent</h4>
+                <div style={{ background: '#fafafa', padding: 12, borderRadius: 6, fontSize: 12, color: '#595959', wordBreak: 'break-all' }}>
+                  {drawerRecord.userAgent || '-'}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </Spin>
       </Drawer>
       {/* 审计日志导出抽屉 */}
       <AuditLogExportDrawer

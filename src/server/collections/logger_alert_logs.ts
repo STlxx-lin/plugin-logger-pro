@@ -3,6 +3,11 @@ import { defineCollection } from '@nocobase/database';
 export default defineCollection({
   name: 'logger_alert_logs',
   title: '告警发送记录',
+  indexes: [
+    { fields: ['createdAt'] },
+    { fields: ['ruleId'] },
+    { fields: ['status'] },
+  ],
   fields: [
     {
       name: 'ruleId',

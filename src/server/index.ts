@@ -86,15 +86,42 @@ export class PluginLoggerProServer extends Plugin {
 
     // 6. 数据库就绪后初始化配置与调度器
     this.app.on('afterStart', async () => {
+      await this.ensureDatabaseIndexes();
       await this.configService.init();
       this.retentionService.startScheduler();
     });
+  }
+
+  private async ensureDatabaseIndexes() {
+    try {
+      const qi = this.db.sequelize.getQueryInterface();
+      const auditTable = this.db.getCollection('logger_audit_logs')?.model?.tableName || 'logger_audit_logs';
+      const alertLogTable = this.db.getCollection('logger_alert_logs')?.model?.tableName || 'logger_alert_logs';
+
+      const safeAddIndex = async (table: string, fields: string[], name: string) => {
+        try {
+          const indexes = await qi.showIndex(table).catch(() => []);
+          const exists = indexes.some((idx: any) => idx.name === name || idx.name === `idx_${name}`);
+          if (!exists) {
+            await qi.addIndex(table, fields, { name }).catch(() => {});
+          }
+        } catch (e) {}
+      };
+
+      await safeAddIndex(auditTable, ['created_at'], 'idx_audit_created_at');
+      await safeAddIndex(auditTable, ['user_username'], 'idx_audit_username');
+      await safeAddIndex(auditTable, ['collection_name'], 'idx_audit_collection');
+      await safeAddIndex(auditTable, ['action_name'], 'idx_audit_action');
+      await safeAddIndex(auditTable, ['status_code'], 'idx_audit_status');
+      await safeAddIndex(alertLogTable, ['created_at'], 'idx_alert_created_at');
+    } catch (err) {}
   }
 
   async install() {
   }
 
   async afterEnable() {
+    await this.ensureDatabaseIndexes();
     if (this.configService) {
       await this.configService.init();
       this.retentionService.startScheduler();

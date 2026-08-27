@@ -3,6 +3,10 @@ import { defineCollection } from '@nocobase/database';
 export default defineCollection({
   name: 'logger_ai_records',
   title: 'AI 日志诊断记录',
+  indexes: [
+    { fields: ['createdAt'] },
+    { fields: ['employeeName'] },
+  ],
   fields: [
     {
       name: 'analyzerName',

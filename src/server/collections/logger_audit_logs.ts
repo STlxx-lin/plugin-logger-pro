@@ -3,6 +3,14 @@ import { defineCollection } from '@nocobase/database';
 export default defineCollection({
   name: 'logger_audit_logs',
   title: '操作审计日志',
+  indexes: [
+    { fields: ['createdAt'] },
+    { fields: ['userUsername'] },
+    { fields: ['collectionName'] },
+    { fields: ['actionName'] },
+    { fields: ['reqId'] },
+    { fields: ['statusCode'] },
+  ],
   fields: [
     {
       name: 'reqId',

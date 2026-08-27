@@ -100,8 +100,8 @@ export class PluginLoggerProServer extends Plugin {
 
       const safeAddIndex = async (table: string, fields: string[], name: string) => {
         try {
-          const indexes = await qi.showIndex(table).catch(() => []);
-          const exists = indexes.some((idx: any) => idx.name === name || idx.name === `idx_${name}`);
+          const indexes: any = await qi.showIndex(table).catch(() => []);
+          const exists = Array.isArray(indexes) && indexes.some((idx: any) => idx?.name === name || idx?.name === `idx_${name}`);
           if (!exists) {
             await qi.addIndex(table, fields, { name }).catch(() => {});
           }

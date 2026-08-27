@@ -50,6 +50,13 @@ export class LogConfigService {
     return val !== undefined && val !== null ? val : ((DEFAULT_CONFIGS as any)[key] ?? defaultValue);
   }
 
+  getConfig(key?: string, defaultValue = ''): any {
+    if (!key) {
+      return this.getAll();
+    }
+    return this.get(key, defaultValue);
+  }
+
   getBoolean(key: string, defaultValue = false): boolean {
     const defaultValStr = (DEFAULT_CONFIGS as any)[key] ?? (defaultValue ? 'true' : 'false');
     const val = this.get(key, defaultValStr);

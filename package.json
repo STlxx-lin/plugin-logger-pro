@@ -6,7 +6,7 @@
   "description.zh-CN": "企业级系统日志控制台、动态日志配置、用户操作审计日志、数据变更Diff对比及多渠道异常告警管理。",
   "homepage": "https://github.com/STlxx-lin/plugin-logger-pro",
   "homepage.zh-CN": "https://github.com/STlxx-lin/plugin-logger-pro",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "main": "server.js",
   "client": "client.js",
   "nocobase": {

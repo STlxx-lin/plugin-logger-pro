@@ -5,6 +5,14 @@ if (!process.env.NODE_MODULES_PATH) {
   process.env.NODE_MODULES_PATH = path.resolve(process.cwd(), 'node_modules');
 }
 
+// 自动将插件内置的 dist/node_modules 注入到 module.paths，确保无论在任何生产容器中都能优先加载自带依赖
+const bundledNodeModules = path.resolve(__dirname, 'dist/node_modules');
+if (fs.existsSync(bundledNodeModules)) {
+  if (!module.paths.includes(bundledNodeModules)) {
+    module.paths.unshift(bundledNodeModules);
+  }
+}
+
 try {
   const { PluginManager } = require('@nocobase/server');
   if (PluginManager) {

@@ -6,9 +6,25 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
 import stream from 'stream';
-import tar from 'tar-fs';
 import zlib from 'zlib';
 import { CronJob } from 'cron';
+
+let tarFsInstance: any = null;
+function getTarFs() {
+  if (!tarFsInstance) {
+    try {
+      tarFsInstance = require('tar-fs');
+    } catch (e) {
+      try {
+        const localPath = path.resolve(__dirname, '../../../dist/node_modules/tar-fs');
+        if (fs.existsSync(localPath)) {
+          tarFsInstance = require(localPath);
+        }
+      } catch (err) {}
+    }
+  }
+  return tarFsInstance;
+}
 
 export class LogRetentionService {
   private app: Application;
@@ -194,7 +210,12 @@ export class LogRetentionService {
     const passthrough = new stream.PassThrough();
     const gz = zlib.createGzip();
 
-    const tarPack = tar.pack(basePath, {
+    const tarFs = getTarFs();
+    if (!tarFs || !tarFs.pack) {
+      throw new Error('tar-fs module is not available in the current environment.');
+    }
+
+    const tarPack = tarFs.pack(basePath, {
       entries,
     });
 

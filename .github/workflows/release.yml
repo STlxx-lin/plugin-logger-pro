@@ -169,18 +169,12 @@ jobs:
           echo "=== Package Files List ==="
           ls -la
           
-          # 打包发布产物 tgz 与 zip（包含根入口文件及 dist 产物，排除源码与 git/开发配置）
+          # 打包发布产物 tgz 与 zip（显式指定包含根入口文件及完整 dist 目录，确保内置依赖与入口完整包含）
           tar -czvf "/tmp/release-artifacts/plugin-logger-pro-v${RELEASE_VERSION}.tgz" \
-            --exclude="node_modules" \
-            --exclude=".git" \
-            --exclude=".github" \
-            --exclude="storage" \
-            --exclude="docs" \
-            --exclude="src" \
-            *
+            package.json README.md server.js server.d.ts client.js client.d.ts client-v2.js client-v2.d.ts dist
             
-          zip -r "/tmp/release-artifacts/plugin-logger-pro-v${RELEASE_VERSION}.zip" * \
-            -x "node_modules/*" ".git/*" ".github/*" "storage/*" "docs/*" "src/*"
+          zip -r "/tmp/release-artifacts/plugin-logger-pro-v${RELEASE_VERSION}.zip" \
+            package.json README.md server.js server.d.ts client.js client.d.ts client-v2.js client-v2.d.ts dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

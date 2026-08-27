@@ -1,19 +1,29 @@
-name: Build and Release
+name: Continuous Integration
 
 on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
+      - develop
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'build.config.ts'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'build.config.ts'
 
 jobs:
-  build-and-release:
-    name: Build & Release NocoBase Plugin
+  build-and-test:
+    name: Build & Verify Plugin
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
 
     steps:
       - name: Checkout Repository
@@ -129,55 +139,15 @@ jobs:
       - name: Install Dependencies
         run: yarn install
 
-      - name: Get Plugin Version
-        id: plugin_version
-        run: |
-          VERSION=$(node -p "require('./packages/plugins/@nocobase/plugin-logger-pro/package.json').version")
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "RELEASE_VERSION=${VERSION}" >> $GITHUB_ENV
-          mkdir -p /tmp/release-artifacts
+      - name: Build Plugin
+        run: yarn nocobase build @nocobase/plugin-logger-pro
 
-      - name: Build & Package Plugin
+      - name: Verify Build Artifacts
         run: |
-          yarn nocobase build @nocobase/plugin-logger-pro
-          
           cd packages/plugins/@nocobase/plugin-logger-pro
-          
-          # 校验核心产物是否存在
-          echo "=== Verifying Build Artifacts ==="
+          echo "Checking essential files..."
           test -f "server.js" || { echo "ERROR: server.js is missing!"; exit 1; }
           test -f "client.js" || { echo "ERROR: client.js is missing!"; exit 1; }
-          test -d "dist" || { echo "ERROR: dist directory not found!"; exit 1; }
           test -f "dist/server/index.js" || { echo "ERROR: dist/server/index.js is missing!"; exit 1; }
           test -f "dist/client/index.js" || { echo "ERROR: dist/client/index.js is missing!"; exit 1; }
-          
-          echo "=== Package Files List ==="
-          ls -la
-          
-          # 打包发布产物 tgz 与 zip（包含根入口文件及 dist 产物，排除源码与 git/开发配置）
-          tar -czvf "/tmp/release-artifacts/plugin-logger-pro-v${RELEASE_VERSION}.tgz" \
-            --exclude="node_modules" \
-            --exclude=".git" \
-            --exclude=".github" \
-            --exclude="storage" \
-            --exclude="docs" \
-            --exclude="src" \
-            *
-            
-          zip -r "/tmp/release-artifacts/plugin-logger-pro-v${RELEASE_VERSION}.zip" * \
-            -x "node_modules/*" ".git/*" ".github/*" "storage/*" "docs/*" "src/*"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
-        with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.plugin_version.outputs.version) }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Release v{0}', steps.plugin_version.outputs.version) }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          files: |
-            /tmp/release-artifacts/plugin-logger-pro-v*.tgz
-            /tmp/release-artifacts/plugin-logger-pro-v*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "All verification checks passed successfully!"

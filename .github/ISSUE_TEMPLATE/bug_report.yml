@@ -1,0 +1,56 @@
+name: 🐛 Bug Report / 错误报告
+description: Create a report to help us improve / 报告插件在使用中遇到的缺陷或错误
+title: '[Bug]: '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢您提交 Bug 报告！在提交前请确保已经阅读过相关文档并使用最新版本进行测试。
+  - type: textarea
+    id: description
+    attributes:
+      label: 🐛 Bug 描述 / Bug Description
+      description: 请清晰、简要地描述您遇到的问题。
+      placeholder: 例如：在日志检索页面按时间范围筛选时，控制台报错...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 🔄 复现步骤 / Steps to Reproduce
+      description: 请提供能复现该问题的详细步骤。
+      placeholder: |
+        1. 打开 '日志控制台' 页面
+        2. 点击 '筛选' 按钮
+        3. 选择 'ERROR' 等级
+        4. 出现错误提示
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 🎯 预期行为 / Expected Behavior
+      description: 请描述您期望的正确行为。
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 💻 环境信息 / Environment
+      description: 请提供当前运行的环境信息。
+      value: |
+        - NocoBase Version: 2.x
+        - Plugin Version:
+        - Node.js Version:
+        - Database Dialect: MySQL / PostgreSQL / SQLite
+        - OS: Windows / macOS / Linux
+        - Browser: Chrome / Edge / Firefox / Safari
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 📄 错误日志 / Logs & Screenshots
+      description: 请提供相关的控制台日志、服务端错误堆栈或截图。
+      render: shell

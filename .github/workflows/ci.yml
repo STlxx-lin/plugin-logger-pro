@@ -136,8 +136,25 @@ jobs:
           touch .env.e2e.example
           touch .env.test.example
 
-      - name: Install Dependencies
-        run: yarn install
+      - name: Install Dependencies with Retry
+        run: |
+          yarn config set network-timeout 600000
+          yarn config set registry https://registry.npmjs.org/
+          
+          n=0
+          until [ "$n" -ge 4 ]
+          do
+            echo "Running yarn install (attempt $((n+1)))..."
+            yarn install --network-timeout 600000 && break
+            n=$((n+1))
+            if [ "$n" -lt 4 ]; then
+              echo "yarn install failed due to network/registry glitch, retrying in 5 seconds..."
+              sleep 5
+            else
+              echo "ERROR: yarn install failed after 4 attempts."
+              exit 1
+            fi
+          done
 
       - name: Build Plugin
         run: yarn nocobase build @nocobase/plugin-logger-pro

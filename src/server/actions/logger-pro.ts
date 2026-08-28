@@ -254,8 +254,52 @@ export function createLoggerProResource(
 
       cleanTableData: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
-        const { collectionName } = params;
+        const collectionName = params.collectionName || ctx.action?.params?.collectionName;
+        if (!collectionName) {
+          ctx.throw(400, 'collectionName is required');
+        }
         const result = await retentionService.cleanTableData(String(collectionName));
+        ctx.body = result;
+        await next();
+      },
+
+      cleanExpiredAuditLogs: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const days = params.days || ctx.action?.params?.days;
+        const result = await retentionService.cleanExpiredAuditLogs(days ? Number(days) : 15);
+        ctx.body = result;
+        await next();
+      },
+
+      getCleanTotalCount: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const collectionName = params.collectionName || ctx.action?.params?.collectionName || 'logger_audit_logs';
+        const rawDays = params.days ?? ctx.action?.params?.days;
+        const days =
+          rawDays !== undefined && rawDays !== null && rawDays !== '' && rawDays !== 'undefined' && !isNaN(Number(rawDays)) && Number(rawDays) > 0
+            ? Number(rawDays)
+            : undefined;
+
+        const result = await retentionService.getCleanTotalCount(String(collectionName), days);
+        ctx.body = result;
+        await next();
+      },
+
+      cleanBatch: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const collectionName = params.collectionName || ctx.action?.params?.collectionName || 'logger_audit_logs';
+        const rawDays = params.days ?? ctx.action?.params?.days;
+        const days =
+          rawDays !== undefined && rawDays !== null && rawDays !== '' && rawDays !== 'undefined' && !isNaN(Number(rawDays)) && Number(rawDays) > 0
+            ? Number(rawDays)
+            : undefined;
+        const limit = params.limit || ctx.action?.params?.limit;
+
+        const result = await retentionService.cleanBatch(
+          String(collectionName),
+          days,
+          limit ? Number(limit) : 20000,
+        );
         ctx.body = result;
         await next();
       },

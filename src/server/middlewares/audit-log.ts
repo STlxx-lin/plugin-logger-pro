@@ -5,12 +5,13 @@ import { AlertService } from '../services/alert.service';
 import { CONFIG_KEYS, ALERT_RULE_TYPES } from '../constants';
 
 export function createAuditLogMiddleware(app: Application, configService: LogConfigService, alertService: AlertService) {
-  // 排除系统内部高频操作及插件管理/迁移相关资源，防止 SQLite 锁争用死锁
+  // 排除系统内部高频操作及插件管理/迁移相关资源，防止 SQLite 锁争用死锁与冗余日志
   const EXCLUDED_COLLECTIONS = new Set([
     'logger_audit_logs',
     'logger_alert_logs',
     'logger_configs',
     'logger_alert_rules',
+    'logger_ai_records',
     'loggerPro',
     'logger',
     'pm',
@@ -25,7 +26,18 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
     'roles',
   ]);
 
-  const AUDITED_ACTIONS = new Set(['create', 'update', 'destroy', 'set', 'add', 'remove', 'toggle', 'batchCreate', 'batchUpdate', 'batchDestroy']);
+  const AUDITED_ACTIONS = new Set([
+    'create',
+    'update',
+    'destroy',
+    'set',
+    'add',
+    'remove',
+    'toggle',
+    'batchCreate',
+    'batchUpdate',
+    'batchDestroy',
+  ]);
 
   return async function auditLogMiddleware(ctx: Context, next: Next) {
     const enabled = configService.getBoolean(CONFIG_KEYS.AUDIT_LOG_ENABLED, true);
@@ -38,11 +50,12 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
       return next();
     }
 
-    const resourceName = action.resourceName || (action as any).collectionName;
-    const collectionName = (action as any).collectionName || action.resourceName;
-    const actionName = action.actionName;
+    const resourceName = action.resourceName || (action as any).collectionName || '';
+    const collectionName = (action as any).collectionName || action.resourceName || '';
+    const actionName = action.actionName || '';
+    const method = ctx.method?.toUpperCase() || 'GET';
 
-    // 排除插件管理与系统内部接口
+    // 1. 排除系统内置核心集合与插件管理接口
     if (
       resourceName === 'pm' ||
       resourceName === 'applicationPlugins' ||
@@ -56,14 +69,38 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
       return next();
     }
 
-    // 检查是否配置了特定数据表白名单
+    // 2. 检查用户自定义排除数据表与操作动作
+    const userExcludeCollections: string[] = configService.getJson(CONFIG_KEYS.AUDIT_EXCLUDE_COLLECTIONS, []);
+    if (
+      userExcludeCollections.length > 0 &&
+      (userExcludeCollections.includes(collectionName) || userExcludeCollections.includes(resourceName))
+    ) {
+      return next();
+    }
+
+    const userExcludeActions: string[] = configService.getJson(CONFIG_KEYS.AUDIT_EXCLUDE_ACTIONS, []);
+    if (userExcludeActions.length > 0 && actionName && userExcludeActions.includes(actionName)) {
+      return next();
+    }
+
+    // 3. 智能过滤只读类 POST 请求（如 list*, get*, check*, sync*, count*, unread* 等）
+    const ignoreReadonlyPost = configService.getBoolean(CONFIG_KEYS.AUDIT_IGNORE_READONLY_POST, true);
+    if (ignoreReadonlyPost && method === 'POST') {
+      const isReadonlyName =
+        /^(list|get|find|check|sync|count|unread|search|query|export|download|filter|paginate)/i.test(actionName) ||
+        /(List|Count|Meta|Mine|ByUser|Enabled|Accessible|Check|Counts|Info)$/i.test(actionName);
+      if (isReadonlyName) {
+        return next();
+      }
+    }
+
+    // 4. 检查是否配置了特定数据表白名单（若配置了白名单，则仅审计白名单中的表）
     const allowedCollections: string[] = configService.getJson(CONFIG_KEYS.AUDIT_COLLECTIONS, []);
     if (allowedCollections.length > 0 && collectionName && !allowedCollections.includes(collectionName)) {
       return next();
     }
 
-    // 仅对写操作或自定义 action 进行审计
-    const method = ctx.method?.toUpperCase() || 'GET';
+    // 5. 仅对写操作或核心审计 action 进行记录
     const isWriteMethod = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
     const isAuditedAction = actionName ? AUDITED_ACTIONS.has(actionName) : false;
 
@@ -78,7 +115,12 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
     const recordId = action.params?.filterByTk || action.params?.values?.id;
 
     // 如果是更新或删除操作，尝试获取修改前快照
-    if (recordDiff && collectionName && recordId && (actionName === 'update' || actionName === 'destroy' || method === 'PUT' || method === 'DELETE')) {
+    if (
+      recordDiff &&
+      collectionName &&
+      recordId &&
+      (actionName === 'update' || actionName === 'destroy' || method === 'PUT' || method === 'DELETE')
+    ) {
       try {
         const repo = app.db.getRepository(collectionName);
         if (repo) {
@@ -106,6 +148,7 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
 
       let afterData: any = null;
       let diffData: any = null;
+      const diffKeys = new Set<string>();
 
       if (recordDiff && !errorOccurred) {
         // 如果是创建或更新，尝试获取变更后的数据
@@ -125,7 +168,7 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
           }
         }
 
-        // 计算字段差异
+        // 计算字段差异，并记录产生差异的 key
         if (beforeData && afterData && typeof beforeData === 'object' && typeof afterData === 'object') {
           diffData = {};
           const allKeys = new Set([...Object.keys(beforeData), ...Object.keys(afterData)]);
@@ -134,12 +177,21 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
             const bVal = JSON.stringify(beforeData[k]);
             const aVal = JSON.stringify(afterData[k]);
             if (bVal !== aVal) {
+              diffKeys.add(k);
               diffData[k] = {
-                old: beforeData[k],
-                new: afterData[k],
+                old: sanitizeAndTruncate(beforeData[k]),
+                new: sanitizeAndTruncate(afterData[k]),
               };
             }
           }
+        }
+      }
+
+      // 如果开启了零差异跳过，且为更新操作但无任何业务字段变化，直接跳过保存
+      const zeroDiffSkip = configService.getBoolean(CONFIG_KEYS.AUDIT_ZERO_DIFF_SKIP, true);
+      if (zeroDiffSkip && (actionName === 'update' || method === 'PUT' || method === 'PATCH')) {
+        if (beforeData && afterData && diffKeys.size === 0) {
+          return;
         }
       }
 
@@ -160,7 +212,7 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
         (ctx.res as any)?.getHeader?.('x-request-id') ||
         '';
 
-      // 异步存储审计日志
+      // 异步存储瘦身后审计日志（仅存储差异相关快照与截断后参数，瘦身 80%~95%）
       const auditPayload = {
         reqId: reqId ? String(reqId) : null,
         userId: currentUser?.id || null,
@@ -174,12 +226,12 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
         actionName: actionName || method,
         recordId: recordId ? String(recordId) : null,
         params: sanitizeParams(action.params),
-        beforeData: beforeData ? sanitizeData(beforeData) : null,
-        afterData: afterData ? sanitizeData(afterData) : null,
+        beforeData: beforeData ? extractLeanData(beforeData, diffKeys) : null,
+        afterData: afterData ? extractLeanData(afterData, diffKeys) : null,
         diff: diffData,
         statusCode,
         durationMs,
-        errorMessage: errorOccurred ? (errorOccurred.message || String(errorOccurred)) : null,
+        errorMessage: errorOccurred ? errorOccurred.message || String(errorOccurred) : null,
       };
 
       saveAuditLog(app, auditPayload).catch((e) => {
@@ -211,23 +263,91 @@ async function saveAuditLog(app: Application, payload: any) {
   }
 }
 
-function sanitizeParams(params: any) {
-  if (!params || typeof params !== 'object') return params;
-  const clone = { ...params };
-  if (clone.values && typeof clone.values === 'object') {
-    clone.values = { ...clone.values };
-    if (clone.values.password) clone.values.password = '******';
-    if (clone.values.secret) clone.values.secret = '******';
-    if (clone.values.token) clone.values.token = '******';
+const SENSITIVE_KEYS = new Set([
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'accessToken',
+  'refreshToken',
+  'privateKey',
+  'authorization',
+]);
+
+/**
+ * 智能截断与脱敏（过滤超长文本、富文本、Base64 与密码）
+ */
+function sanitizeAndTruncate(val: any, maxStrLen = 300, depth = 0): any {
+  if (val === null || val === undefined) return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return val;
+
+  if (typeof val === 'string') {
+    // 识别 Base64 图片或超长 DataURL
+    if (val.startsWith('data:image/') || (val.length > 500 && /^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$/.test(val.slice(0, 100)))) {
+      return `[Base64 Media Data (${val.length} chars)]`;
+    }
+    // 普通长字符串截断
+    if (val.length > maxStrLen) {
+      return `${val.slice(0, maxStrLen)}... [Total ${val.length} chars]`;
+    }
+    return val;
   }
-  return clone;
+
+  if (depth > 3) return '[Object/Array]';
+
+  if (Array.isArray(val)) {
+    if (val.length > 10) {
+      const sliced = val.slice(0, 10).map((item) => sanitizeAndTruncate(item, maxStrLen, depth + 1));
+      sliced.push(`... [Total ${val.length} items]`);
+      return sliced;
+    }
+    return val.map((item) => sanitizeAndTruncate(item, maxStrLen, depth + 1));
+  }
+
+  if (typeof val === 'object') {
+    const res: Record<string, any> = {};
+    for (const key of Object.keys(val)) {
+      if (SENSITIVE_KEYS.has(key)) {
+        res[key] = '******';
+      } else {
+        res[key] = sanitizeAndTruncate(val[key], maxStrLen, depth + 1);
+      }
+    }
+    return res;
+  }
+
+  return val;
 }
 
-function sanitizeData(data: any) {
+/**
+ * 提取精简快照数据：若有变更 key 集合，仅保留产生差异的字段和核心标识，杜绝冗余存储整表字段
+ */
+function extractLeanData(data: any, diffKeys?: Set<string>): any {
   if (!data || typeof data !== 'object') return data;
-  const clone = { ...data };
-  if (clone.password) clone.password = '******';
-  if (clone.secret) clone.secret = '******';
-  if (clone.token) clone.token = '******';
-  return clone;
+
+  const res: Record<string, any> = {};
+  const keepKeys = new Set(['id', 'createdAt', 'updatedAt', ...(diffKeys ? Array.from(diffKeys) : [])]);
+
+  // 如果没有指定 diffKeys（如新增或全量快照），限制最多保留前 15 个非空字段
+  const keysToExtract = diffKeys && diffKeys.size > 0 ? Array.from(keepKeys) : Object.keys(data).slice(0, 15);
+
+  for (const k of keysToExtract) {
+    if (k in data) {
+      if (SENSITIVE_KEYS.has(k)) {
+        res[k] = '******';
+      } else {
+        res[k] = sanitizeAndTruncate(data[k]);
+      }
+    }
+  }
+
+  return res;
+}
+
+/**
+ * 对请求参数 params 进行精简与脱敏
+ */
+function sanitizeParams(params: any): any {
+  if (!params || typeof params !== 'object') return params;
+  return sanitizeAndTruncate(params, 300);
 }

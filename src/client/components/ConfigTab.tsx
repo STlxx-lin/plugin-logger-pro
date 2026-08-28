@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Form,
   Card,
@@ -20,6 +20,7 @@ import {
   Statistic,
   Progress,
   Tooltip,
+  Modal,
 } from 'antd';
 import {
   SaveOutlined,
@@ -32,6 +33,8 @@ import {
   HddOutlined,
   DeleteOutlined,
   InfoCircleOutlined,
+  LoadingOutlined,
+  CloseCircleOutlined,
 } from '@ant-design/icons';
 import { useAPIClient } from '@nocobase/client';
 
@@ -47,6 +50,89 @@ export const ConfigTab: React.FC = () => {
   const [statsLoading, setStatsLoading] = useState(false);
   const [storageStats, setStorageStats] = useState<any>(null);
 
+  // 删除进度弹窗状态
+  const [progressVisible, setProgressVisible] = useState(false);
+  const [progressTitle, setProgressTitle] = useState('');
+  const [totalToClean, setTotalToClean] = useState(0);
+  const [cleanedCount, setCleanedCount] = useState(0);
+  const [remainingCount, setRemainingCount] = useState(0);
+  const [cleanStatus, setCleanStatus] = useState<'running' | 'completed' | 'error' | 'stopped'>('running');
+  const [cleanErrorMsg, setCleanErrorMsg] = useState('');
+  const cancelCleanRef = useRef(false);
+
+  // 系统预置集合与常用数据表中文映射
+  const systemCollectionMap: Record<string, string> = {
+    auth: '用户身份与认证',
+    roles: '角色与权限控制',
+    uiSchemas: '界面区块 Schema 配置',
+    uiSchemaTemplates: '区块 UI 模板配置',
+    desktopRoutes: '桌面端路由与菜单',
+    themeConfig: '主题与界面外观配置',
+    dataSources: '数据源连接与配置',
+    environmentVariables: '系统环境变量',
+    systemSettings: '系统全局核心设置',
+    applicationPlugins: '应用插件管理与状态',
+    migrations: '数据库版本迁移记录',
+    workflow: '工作流引擎核心表',
+    flowModels: '流程设计模型',
+    aiConversations: 'AI 会话与交互历史',
+    aiEmployees: 'AI 智能员工与助手',
+    attachments: '附件与文件存储表',
+    logger_audit_logs: '操作审计记录表',
+    logger_alert_logs: '告警通知发送记录',
+    logger_configs: '日志系统配置表',
+    logger_alert_rules: '智能告警规则表',
+    logger_ai_records: 'AI 诊断记录表',
+  };
+
+  // 排除数据表候选选项（带丰富中文标注）
+  const excludeCollectionOptions = React.useMemo(() => {
+    const existing = new Set<string>();
+    const options: Array<{ label: string; value: string }> = [];
+
+    for (const c of collectionsList) {
+      existing.add(c.name);
+      const zh = systemCollectionMap[c.name] || c.title || c.name;
+      options.push({
+        label: `${zh} (${c.name})`,
+        value: c.name,
+      });
+    }
+
+    for (const [key, zh] of Object.entries(systemCollectionMap)) {
+      if (!existing.has(key)) {
+        options.push({
+          label: `${zh} (${key})`,
+          value: key,
+        });
+      }
+    }
+
+    return options;
+  }, [collectionsList]);
+
+  // 排除操作动作候选选项（全中文详细标注）
+  const excludeActionOptions = [
+    { label: 'syncCookies (Cookie 会话心跳同步)', value: 'syncCookies' },
+    { label: 'unreadCounts (未读消息与提醒轮询)', value: 'unreadCounts' },
+    { label: 'listByUser (用户与员工列表拉取)', value: 'listByUser' },
+    { label: 'listMeta (集合元数据动态查询)', value: 'listMeta' },
+    { label: 'listAccessible (可访问菜单与路由查询)', value: 'listAccessible' },
+    { label: 'listMine (我的待办工作流任务)', value: 'listMine' },
+    { label: 'check (权限与状态常规校验)', value: 'check' },
+    { label: 'getLang (系统多语言词包获取)', value: 'getLang' },
+    { label: 'getInfo (应用与环境信息查询)', value: 'getInfo' },
+    { label: 'getConfigs (日志与插件配置读取)', value: 'getConfigs' },
+    { label: 'getCollections (数据表与模型列表获取)', value: 'getCollections' },
+    { label: 'dashboard (仪表盘运行状态获取)', value: 'dashboard' },
+    { label: 'getFile (文件与附件预览读取)', value: 'getFile' },
+    { label: 'list (基础列表只读数据查询)', value: 'list' },
+    { label: 'get (基础单条只读数据查询)', value: 'get' },
+    { label: 'count (数据总量统计)', value: 'count' },
+    { label: 'find (数据检索查询)', value: 'find' },
+    { label: 'findOne (单条数据检索)', value: 'findOne' },
+  ];
+
   // 1. 获取配置与 Collections
   const fetchConfigs = async () => {
     setLoading(true);
@@ -60,8 +146,32 @@ export const ConfigTab: React.FC = () => {
       setCollectionsList(colRes?.data?.data || colRes?.data || []);
 
       let auditCols: string[] = [];
+      let auditExcludeCols: string[] = [];
+      let auditExcludeActs: string[] = [];
       try {
         auditCols = configs.audit_collections ? JSON.parse(configs.audit_collections) : [];
+      } catch {}
+      try {
+        auditExcludeCols = configs.audit_exclude_collections
+          ? JSON.parse(configs.audit_exclude_collections)
+          : [
+              'auth',
+              'roles',
+              'uiSchemas',
+              'uiSchemaTemplates',
+              'desktopRoutes',
+              'themeConfig',
+              'dataSources',
+              'environmentVariables',
+              'systemSettings',
+              'applicationPlugins',
+              'migrations',
+            ];
+      } catch {}
+      try {
+        auditExcludeActs = configs.audit_exclude_actions
+          ? JSON.parse(configs.audit_exclude_actions)
+          : ['syncCookies', 'unreadCounts', 'listByUser', 'listMeta', 'listAccessible', 'listMine', 'check'];
       } catch {}
 
       form.setFieldsValue({
@@ -73,6 +183,10 @@ export const ConfigTab: React.FC = () => {
         audit_log_enabled: configs.audit_log_enabled === 'true',
         audit_record_diff: configs.audit_record_diff === 'true',
         audit_collections: auditCols,
+        audit_exclude_collections: auditExcludeCols,
+        audit_exclude_actions: auditExcludeActs,
+        audit_ignore_readonly_post: configs.audit_ignore_readonly_post !== 'false',
+        audit_zero_diff_skip: configs.audit_zero_diff_skip !== 'false',
         retention_days: Number(configs.retention_days) || 15,
         max_disk_size_mb: Number(configs.max_disk_size_mb) || 2048,
         auto_clean_enabled: configs.auto_clean_enabled === 'true',
@@ -117,6 +231,10 @@ export const ConfigTab: React.FC = () => {
         audit_log_enabled: String(values.audit_log_enabled),
         audit_record_diff: String(values.audit_record_diff),
         audit_collections: JSON.stringify(values.audit_collections || []),
+        audit_exclude_collections: JSON.stringify(values.audit_exclude_collections || []),
+        audit_exclude_actions: JSON.stringify(values.audit_exclude_actions || []),
+        audit_ignore_readonly_post: String(values.audit_ignore_readonly_post),
+        audit_zero_diff_skip: String(values.audit_zero_diff_skip),
         retention_days: String(values.retention_days),
         max_disk_size_mb: String(values.max_disk_size_mb),
         auto_clean_enabled: String(values.auto_clean_enabled),
@@ -156,17 +274,100 @@ export const ConfigTab: React.FC = () => {
     }
   };
 
-  // 5. 清空某张数据表
-  const handleCleanTable = async (collectionName: string) => {
+  // 5. 启动带实时进度条的分批极速清理
+  const startCleanWithProgress = async (collectionName: string, days?: number) => {
+    cancelCleanRef.current = false;
+    setCleanStatus('running');
+    setCleanErrorMsg('');
+    setProgressVisible(true);
+
+    const isExpired = Boolean(days && Number(days) > 0);
+    const modeTitle = isExpired
+      ? `清理「${collectionName}」${days} 天前历史数据`
+      : `清空「${collectionName}」全部数据`;
+    setProgressTitle(modeTitle);
+
+    const queryParams: Record<string, any> = { collectionName };
+    if (isExpired) {
+      queryParams.days = Number(days);
+    }
+
     try {
-      await api.request({
-        url: 'loggerPro:cleanTableData',
-        params: { collectionName },
+      // 1. 获取待清理记录总数
+      const totalRes = await api.request({
+        url: 'loggerPro:getCleanTotalCount',
+        params: queryParams,
       });
-      message.success(`已清空数据表 ${collectionName}`);
+      const total = Number(totalRes?.data?.data?.totalCount ?? totalRes?.data?.totalCount ?? 0);
+      setTotalToClean(total);
+      setCleanedCount(0);
+      setRemainingCount(total);
+
+      if (total === 0) {
+        if (!isExpired) {
+          // 清空模式下做一次兜底清空
+          await api.request({
+            url: 'loggerPro:cleanTableData',
+            params: { collectionName },
+            data: { collectionName },
+          });
+        }
+        setCleanStatus('completed');
+        message.success(`${modeTitle} 已完成！`);
+        fetchStorageStats();
+        return;
+      }
+
+      // 2. 分批流式循环清理（每批 20,000 条极速清除）
+      let currentRemaining = total;
+      const batchLimit = 20000;
+
+      while (currentRemaining > 0 && !cancelCleanRef.current) {
+        const batchRes = await api.request({
+          url: 'loggerPro:cleanBatch',
+          params: { ...queryParams, limit: batchLimit },
+          data: { ...queryParams, limit: batchLimit },
+        });
+
+        const newRemaining = Number(
+          batchRes?.data?.data?.remainingCount ?? batchRes?.data?.remainingCount ?? 0
+        );
+
+        // 如果后端记录数未发生变化（例如全量清空已完毕），尝试兜底结束
+        if (newRemaining >= currentRemaining) {
+          if (!isExpired) {
+            await api.request({
+              url: 'loggerPro:cleanTableData',
+              params: { collectionName },
+              data: { collectionName },
+            });
+          }
+          setCleanedCount(total);
+          setRemainingCount(0);
+          break;
+        }
+
+        currentRemaining = newRemaining;
+        const currentCleaned = Math.max(total - currentRemaining, 0);
+        setCleanedCount(currentCleaned);
+        setRemainingCount(currentRemaining);
+
+        if (currentRemaining <= 0) break;
+      }
+
+      if (cancelCleanRef.current) {
+        setCleanStatus('stopped');
+        message.warning('已暂停清理，已处理的数据已生效');
+      } else {
+        setCleanStatus('completed');
+        message.success(`${modeTitle} 完成！`);
+      }
+
       fetchStorageStats();
     } catch (err: any) {
-      message.error(`清空失败: ${err.message}`);
+      setCleanStatus('error');
+      setCleanErrorMsg(err.message || '清理异常中断');
+      message.error(`清理异常: ${err.message}`);
     }
   };
 
@@ -207,17 +408,32 @@ export const ConfigTab: React.FC = () => {
       key: 'action',
       render: (_: any, rec: any) => (
         rec.count > 0 && rec.collection !== 'logger_configs' && rec.collection !== 'logger_alert_rules' ? (
-          <Popconfirm
-            title={`确定清空「${rec.title}」的所有数据？`}
-            description="清空后历史数据不可恢复，请谨慎操作。"
-            onConfirm={() => handleCleanTable(rec.collection)}
-            okText="确定清空"
-            cancelText="取消"
-          >
-            <Button size="small" type="link" danger icon={<DeleteOutlined />}>
-              清空数据
-            </Button>
-          </Popconfirm>
+          <Space size="small">
+            {rec.collection === 'logger_audit_logs' && (
+              <Popconfirm
+                title="清理 15 天前旧数据"
+                description="将保留最近 15 天内的审计记录，物理清理 15 天前的历史数据以释放空间。"
+                onConfirm={() => startCleanWithProgress('logger_audit_logs', 15)}
+                okText="立即清理"
+                cancelText="取消"
+              >
+                <Button size="small" type="link">
+                  清理15天前数据
+                </Button>
+              </Popconfirm>
+            )}
+            <Popconfirm
+              title={`确定清空「${rec.title}」的所有数据？`}
+              description="清空后历史数据不可恢复，请谨慎操作。"
+              onConfirm={() => startCleanWithProgress(rec.collection)}
+              okText="确定清空"
+              cancelText="取消"
+            >
+              <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+                清空全部
+              </Button>
+            </Popconfirm>
+          </Space>
         ) : (
           <span style={{ color: '#bfbfbf', fontSize: 12 }}>-</span>
         )
@@ -394,9 +610,9 @@ export const ConfigTab: React.FC = () => {
 
           {/* 3. 数据变更审计配置 */}
           <Col xs={24}>
-            <Card size="small" title="操作与变更审计 (Audit Log Configuration)" bordered>
+            <Card size="small" title="操作与变更审计配置 (Audit Trail Configuration)" bordered>
               <Row gutter={[16, 12]}>
-                <Col xs={24} md={8}>
+                <Col xs={24} md={6}>
                   <Form.Item
                     name="audit_log_enabled"
                     label="开启全链路操作审计"
@@ -406,27 +622,81 @@ export const ConfigTab: React.FC = () => {
                   </Form.Item>
                 </Col>
 
-                <Col xs={24} md={8}>
+                <Col xs={24} md={6}>
                   <Form.Item
                     name="audit_record_diff"
-                    label="记录数据变更前后字段差异 (Diff)"
+                    label="记录变更前/后快照与Diff对比"
                     valuePropName="checked"
-                    tooltip="启用后将在更新和删除操作时记录 Before/After 变更快照。"
+                    tooltip="启用后将在更新和删除时自动记录字段变更前后对比，并自动瘦身超长文本与Base64媒体。"
                   >
                     <Switch checkedChildren="开启" unCheckedChildren="关闭" />
                   </Form.Item>
                 </Col>
 
-                <Col xs={24} md={8}>
+                <Col xs={24} md={6}>
+                  <Form.Item
+                    name="audit_ignore_readonly_post"
+                    label="智能过滤只读/心跳 POST (推荐)"
+                    valuePropName="checked"
+                    tooltip="自动过滤以 list/get/find/check/sync/count/unread 等命名的只读心跳请求，防止审计表被系统轮询刷屏暴涨。"
+                  >
+                    <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                  </Form.Item>
+                </Col>
+
+                <Col xs={24} md={6}>
+                  <Form.Item
+                    name="audit_zero_diff_skip"
+                    label="忽略无字段变动的更新 (推荐)"
+                    valuePropName="checked"
+                    tooltip="当修改前与修改后数据完全一致时，自动跳过审计存储，避免产生空更新冗余日志。"
+                  >
+                    <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                  </Form.Item>
+                </Col>
+
+                <Col xs={24} md={12}>
+                  <Form.Item
+                    name="audit_exclude_collections"
+                    label="排除审计的数据表/集合 (Exclude Collections)"
+                    tooltip="配置在此列表中的数据表变更将不会被记录。可勾选系统表或手动输入自定义集合名称。"
+                  >
+                    <Select
+                      mode="tags"
+                      allowClear
+                      placeholder="选择或输入排除的数据表名称"
+                      style={{ width: '100%' }}
+                      options={excludeCollectionOptions}
+                    />
+                  </Form.Item>
+                </Col>
+
+                <Col xs={24} md={12}>
+                  <Form.Item
+                    name="audit_exclude_actions"
+                    label="排除审计的操作动作 (Exclude Actions)"
+                    tooltip="配置在此列表中的 Action 操作将直接跳过审计记录，已为您预设常用只读与心跳动作中文说明。"
+                  >
+                    <Select
+                      mode="tags"
+                      allowClear
+                      placeholder="选择或输入需要忽略的 Action 操作名称"
+                      style={{ width: '100%' }}
+                      options={excludeActionOptions}
+                    />
+                  </Form.Item>
+                </Col>
+
+                <Col xs={24}>
                   <Form.Item
                     name="audit_collections"
-                    label="指定重点审计的数据表"
-                    tooltip="留空则默认审计除系统元数据外的所有业务表。"
+                    label="重点审计白名单 (选填)"
+                    tooltip="留空则采用排除黑名单模式（审计除排除表外的所有业务表）；若指定了白名单，则仅审计白名单中的数据表。"
                   >
                     <Select
                       mode="multiple"
                       allowClear
-                      placeholder="全部业务数据表 (默认)"
+                      placeholder="全部业务数据表 (默认模式，通过上方排除项进行精细控制)"
                       style={{ width: '100%' }}
                       options={collectionsList.map((c) => ({
                         label: `${c.title || c.name} (${c.name})`,
@@ -520,6 +790,146 @@ export const ConfigTab: React.FC = () => {
           </Button>
         </div>
       </Form>
+
+      {/* 数据清理与清空实时进度弹窗 */}
+      <Modal
+        title={
+          <Space>
+            {cleanStatus === 'running' && <LoadingOutlined style={{ color: '#1890ff' }} />}
+            {cleanStatus === 'completed' && <CheckCircleOutlined style={{ color: '#52c41a' }} />}
+            {cleanStatus === 'error' && <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+            <span style={{ fontWeight: 600 }}>{progressTitle || '数据清理进度'}</span>
+          </Space>
+        }
+        open={progressVisible}
+        closable={cleanStatus !== 'running'}
+        maskClosable={false}
+        footer={[
+          cleanStatus === 'running' && (
+            <Button
+              key="cancel"
+              danger
+              onClick={() => {
+                cancelCleanRef.current = true;
+              }}
+            >
+              暂停 / 中止清理
+            </Button>
+          ),
+          cleanStatus !== 'running' && (
+            <Button
+              key="close"
+              type="primary"
+              onClick={() => {
+                setProgressVisible(false);
+              }}
+            >
+              完成并关闭
+            </Button>
+          ),
+        ].filter(Boolean)}
+        width={560}
+      >
+        <div style={{ padding: '12px 0' }}>
+          {/* 进度条 */}
+          <div style={{ marginBottom: 20 }}>
+            <Progress
+              percent={
+                totalToClean > 0
+                  ? Math.min(Math.round((cleanedCount / totalToClean) * 100), 100)
+                  : cleanStatus === 'completed'
+                  ? 100
+                  : 0
+              }
+              status={
+                cleanStatus === 'completed'
+                  ? 'success'
+                  : cleanStatus === 'error'
+                  ? 'exception'
+                  : cleanStatus === 'stopped'
+                  ? 'normal'
+                  : 'active'
+              }
+              strokeColor={{
+                '0%': '#1890ff',
+                '100%': '#52c41a',
+              }}
+              strokeWidth={12}
+            />
+          </div>
+
+          {/* 核心指标看板 */}
+          <Row gutter={16} style={{ marginBottom: 16 }}>
+            <Col span={8}>
+              <Card size="small" style={{ textAlign: 'center', background: '#f5f5f5' }}>
+                <Statistic
+                  title="待清理总量"
+                  value={totalToClean}
+                  formatter={(val) => Number(val).toLocaleString() + ' 行'}
+                  valueStyle={{ fontSize: 16, fontWeight: 600 }}
+                />
+              </Card>
+            </Col>
+            <Col span={8}>
+              <Card size="small" style={{ textAlign: 'center', background: '#f6ffed', borderColor: '#b7eb8f' }}>
+                <Statistic
+                  title="已成功清理"
+                  value={cleanedCount}
+                  formatter={(val) => Number(val).toLocaleString() + ' 行'}
+                  valueStyle={{ fontSize: 16, fontWeight: 600, color: '#52c41a' }}
+                />
+              </Card>
+            </Col>
+            <Col span={8}>
+              <Card size="small" style={{ textAlign: 'center', background: '#e6f7ff', borderColor: '#91d5ff' }}>
+                <Statistic
+                  title="剩余待处理"
+                  value={remainingCount}
+                  formatter={(val) => Number(val).toLocaleString() + ' 行'}
+                  valueStyle={{ fontSize: 16, fontWeight: 600, color: '#1890ff' }}
+                />
+              </Card>
+            </Col>
+          </Row>
+
+          {/* 提示信息 */}
+          {cleanStatus === 'running' && (
+            <Alert
+              message="正在分批极速清理中..."
+              description="系统采用 20,000 条/批次流水线式清除，零主线程阻塞，请稍候。"
+              type="info"
+              showIcon
+            />
+          )}
+
+          {cleanStatus === 'completed' && (
+            <Alert
+              message="数据清理已全部完成！"
+              description={`共释放历史审计记录 ${cleanedCount.toLocaleString()} 行，空间统计数据已自动刷新。`}
+              type="success"
+              showIcon
+            />
+          )}
+
+          {cleanStatus === 'stopped' && (
+            <Alert
+              message="清理操作已由用户手动中止"
+              description={`已处理的 ${cleanedCount.toLocaleString()} 行数据已成功释放。`}
+              type="warning"
+              showIcon
+            />
+          )}
+
+          {cleanStatus === 'error' && (
+            <Alert
+              message="清理过程中遇到异常"
+              description={cleanErrorMsg || '网络或数据库繁忙，请稍后重试。'}
+              type="error"
+              showIcon
+            />
+          )}
+        </div>
+      </Modal>
     </div>
   );
 };

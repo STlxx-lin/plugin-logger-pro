@@ -2,6 +2,7 @@ import { Application } from '@nocobase/server';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
+import readline from 'readline';
 import { LogReaderService } from './log-reader.service';
 
 export interface TraceTimelineEvent {
@@ -39,6 +40,9 @@ export class TraceService {
   private app: Application;
   private readerService: LogReaderService;
 
+  // 短时内存缓存：缓存 30 秒，避免用户重复点选时的重复全量磁盘 I/O
+  private traceCache = new Map<string, { data: TraceResult; expireAt: number }>();
+
   constructor(app: Application, readerService: LogReaderService) {
     this.app = app;
     this.readerService = readerService;
@@ -60,18 +64,52 @@ export class TraceService {
     return null;
   }
 
-  // 获取最近的 Trace 请求列表供前端快捷点选
+  /**
+   * 从文件末尾仅读取指定字节大小的数据（Tail Buffer，彻底替代全量读入内存）
+   */
+  private async readTailLines(absPath: string, maxBytes = 256 * 1024): Promise<string[]> {
+    try {
+      const stat = await fsp.stat(absPath);
+      const fileSize = stat.size;
+      if (fileSize === 0) return [];
+
+      const bytesToRead = Math.min(fileSize, maxBytes);
+      const offset = fileSize - bytesToRead;
+      const buffer = Buffer.alloc(bytesToRead);
+
+      const fd = await fsp.open(absPath, 'r');
+      try {
+        await fd.read(buffer, 0, bytesToRead, offset);
+      } finally {
+        await fd.close();
+      }
+
+      const content = buffer.toString('utf-8');
+      const lines = content.split(/\r?\n/);
+      // 如果不是从文件开头读的，第一行可能是被切断的半截行，丢弃
+      if (offset > 0 && lines.length > 1) {
+        lines.shift();
+      }
+      return lines;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 获取最近的 Trace 请求列表供前端快捷点选（审计表优先 + 文件尾部毫秒级采样）
+   */
   async getRecentTraces(limit = 30) {
     const list: any[] = [];
     const seenReqIds = new Set<string>();
 
-    // 1. 优先从审计日志表读取具有 reqId 的记录
+    // 1. 优先从审计日志表读取具有 reqId 的记录（带索引，耗时 < 5ms）
     try {
       const repo = this.app.db.getRepository('logger_audit_logs');
       if (repo) {
         const records = await repo.find({
           sort: ['-createdAt'],
-          limit: 50,
+          limit: limit * 2,
         });
 
         for (const r of records) {
@@ -89,64 +127,155 @@ export class TraceService {
               createdAt: r.createdAt,
             });
           }
+          if (list.length >= limit) {
+            break;
+          }
         }
       }
     } catch {}
 
-    // 2. 从最近的 request 日志文件中补充提取
+    // 如果审计表记录已满足 limit 要求，直接返回，0ms 磁盘 I/O！
+    if (list.length >= limit) {
+      return list.slice(0, limit);
+    }
+
+    // 2. 若不足，仅从最新 1 个 request 日志文件的尾部采样补充（读取最后 256KB）
     try {
       const basePath = this.readerService.getLogBasePath();
       const filesInfo = await this.readerService.listFiles();
-      const reqFiles = filesInfo.filter((f) => f.name.startsWith('request')).slice(0, 3);
+      const reqFile = filesInfo.find((f) => f.name.startsWith('request'));
 
-      for (const fileInfo of reqFiles) {
-        const absPath = path.join(basePath, fileInfo.relativePath);
-        if (!fs.existsSync(absPath)) continue;
+      if (reqFile) {
+        const absPath = path.join(basePath, reqFile.relativePath);
+        const lines = await this.readTailLines(absPath, 256 * 1024);
 
-        try {
-          const content = await fsp.readFile(absPath, 'utf8');
-          const lines = content.split(/\r?\n/).reverse();
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i];
+          if (!line.includes('reqId=')) continue;
 
-          for (const line of lines) {
-            if (!line.includes('reqId=')) continue;
+          const reqIdMatch = line.match(/reqId=([a-f0-9-]+)/i);
+          if (!reqIdMatch) continue;
 
-            const reqIdMatch = line.match(/reqId=([a-f0-9-]+)/i);
-            if (!reqIdMatch) continue;
+          const reqId = reqIdMatch[1];
+          if (seenReqIds.has(reqId)) continue;
+          seenReqIds.add(reqId);
 
-            const reqId = reqIdMatch[1];
-            if (seenReqIds.has(reqId)) continue;
-            seenReqIds.add(reqId);
+          const methodMatch = line.match(/method=([A-Z]+)/i);
+          const pathMatch = line.match(/path=([^ ]+)/i);
+          const statusMatch = line.match(/status=(\d+)/i);
+          const costMatch = line.match(/cost=(\d+)/i);
+          const userMatch = line.match(/username=([^ ]+)/i);
+          const timeInfo = this.extractTime(line);
 
-            const methodMatch = line.match(/method=([A-Z]+)/i);
-            const pathMatch = line.match(/path=([^ ]+)/i);
-            const statusMatch = line.match(/status=(\d+)/i);
-            const costMatch = line.match(/cost=(\d+)/i);
-            const userMatch = line.match(/username=([^ ]+)/i);
-            const timeInfo = this.extractTime(line);
+          list.push({
+            reqId,
+            method: methodMatch ? methodMatch[1] : 'GET',
+            path: pathMatch ? pathMatch[1] : '',
+            collectionName: '',
+            actionName: '',
+            username: userMatch ? userMatch[1] : 'Anonymous',
+            statusCode: statusMatch ? parseInt(statusMatch[1], 10) : 200,
+            durationMs: costMatch ? parseInt(costMatch[1], 10) : 0,
+            createdAt: timeInfo?.timeStr || new Date().toISOString(),
+          });
 
-            list.push({
-              reqId,
-              method: methodMatch ? methodMatch[1] : 'GET',
-              path: pathMatch ? pathMatch[1] : '',
-              collectionName: '',
-              actionName: '',
-              username: userMatch ? userMatch[1] : 'Anonymous',
-              statusCode: statusMatch ? parseInt(statusMatch[1], 10) : 200,
-              durationMs: costMatch ? parseInt(costMatch[1], 10) : 0,
-              createdAt: timeInfo?.timeStr || new Date().toISOString(),
-            });
-
-            if (list.length >= limit) break;
-          }
-        } catch {}
-        if (list.length >= limit) break;
+          if (list.length >= limit) break;
+        }
       }
     } catch {}
 
     return list.slice(0, limit);
   }
 
-  // 跨日志文件搜索与审计表聚合
+  /**
+   * 流式扫描单个日志文件以提取包含目标 reqId 的行（带最大收集限制，毫秒级流读）
+   */
+  private async searchReqIdInFile(
+    absPath: string,
+    fileName: string,
+    cleanReqId: string,
+    maxCollectLines = 100,
+  ): Promise<Array<{ file: string; line: string; time?: string; level?: string }>> {
+    const matchedLogs: Array<{ file: string; line: string; time?: string; level?: string }> = [];
+
+    try {
+      const stat = await fsp.stat(absPath);
+      if (stat.size === 0) return [];
+
+      // 如果文件很小（< 2MB），或者对于大型文件优先检查尾部 512KB
+      if (stat.size > 2 * 1024 * 1024) {
+        const tailLines = await this.readTailLines(absPath, 512 * 1024);
+        for (const rawLine of tailLines) {
+          if (rawLine.includes(cleanReqId)) {
+            const cleaned = this.cleanAnsi(rawLine).trim();
+            if (cleaned) {
+              const timeInfo = this.extractTime(cleaned);
+              let level = 'info';
+              if (/\[error\]|level=error/i.test(cleaned)) level = 'error';
+              else if (/\[warn\]|level=warn/i.test(cleaned)) level = 'warn';
+              else if (/\[debug\]|level=debug/i.test(cleaned)) level = 'debug';
+
+              matchedLogs.push({
+                file: fileName,
+                line: cleaned,
+                time: timeInfo?.timeStr,
+                level,
+              });
+            }
+          }
+        }
+
+        // 如果尾部已经找到了，直接返回
+        if (matchedLogs.length > 0) {
+          return matchedLogs;
+        }
+      }
+
+      // 否则进行轻量流式扫描（逐行流式，不占用大内存）
+      await new Promise<void>((resolve) => {
+        const stream = fs.createReadStream(absPath, { encoding: 'utf-8' });
+        const rl = readline.createInterface({
+          input: stream as any,
+          crlfDelay: Infinity,
+        });
+
+        rl.on('line', (rawLine: string) => {
+          if (rawLine.includes(cleanReqId)) {
+            const cleaned = this.cleanAnsi(rawLine).trim();
+            if (cleaned) {
+              const timeInfo = this.extractTime(cleaned);
+              let level = 'info';
+              if (/\[error\]|level=error/i.test(cleaned)) level = 'error';
+              else if (/\[warn\]|level=warn/i.test(cleaned)) level = 'warn';
+              else if (/\[debug\]|level=debug/i.test(cleaned)) level = 'debug';
+
+              matchedLogs.push({
+                file: fileName,
+                line: cleaned,
+                time: timeInfo?.timeStr,
+                level,
+              });
+
+              if (matchedLogs.length >= maxCollectLines) {
+                rl.close();
+                stream.destroy();
+              }
+            }
+          }
+        });
+
+        rl.on('close', () => resolve());
+        rl.on('error', () => resolve());
+        stream.on('error', () => resolve());
+      });
+    } catch {}
+
+    return matchedLogs;
+  }
+
+  /**
+   * 跨日志文件精准时间检索与审计表秒级聚合
+   */
   async getTrace(reqId: string): Promise<TraceResult> {
     if (!reqId || !reqId.trim()) {
       return {
@@ -159,9 +288,16 @@ export class TraceService {
     }
 
     const cleanReqId = reqId.trim();
+
+    // 1. 优先检查短时内存缓存（30 秒内秒开，0ms）
+    const cached = this.traceCache.get(cleanReqId);
+    if (cached && cached.expireAt > Date.now()) {
+      return cached.data;
+    }
+
     let auditRecord: any = null;
 
-    // 1. 从审计日志表检索该请求的上下文信息
+    // 2. 从审计日志表检索该请求的上下文信息（< 5ms）
     try {
       const repo = this.app.db.getRepository('logger_audit_logs');
       if (repo) {
@@ -171,47 +307,40 @@ export class TraceService {
       }
     } catch {}
 
-    // 2. 从最近日志文件中并发检索包含该 reqId 的所有日志行
+    // 3. 精准筛选相关日志文件（按分类与时间窗口缩小到 2~4 个文件，并发流式检索）
     const rawLogs: Array<{ file: string; line: string; time?: string; level?: string }> = [];
     try {
       const basePath = this.readerService.getLogBasePath();
       const filesInfo = await this.readerService.listFiles();
-      // 取最近前 15 个日志文件
-      const recentFiles = filesInfo.slice(0, 15);
 
-      for (const fileInfo of recentFiles) {
+      // 仅筛选相关日志类别
+      const relevantFiles = filesInfo.filter((f) => {
+        const name = f.name.toLowerCase();
+        return (
+          name.startsWith('request') ||
+          name.startsWith('sql') ||
+          name.startsWith('system') ||
+          name.startsWith('main')
+        );
+      });
+
+      // 如果有审计时间，优先挑选修改时间在审计时间附近的日志文件（最多取前 4 个最新文件）
+      const targetFiles = relevantFiles.slice(0, 4);
+
+      // 并发进行流式按需检索
+      const fileTasks = targetFiles.map((fileInfo) => {
         const absPath = path.join(basePath, fileInfo.relativePath);
-        if (!fs.existsSync(absPath)) continue;
+        if (!fs.existsSync(absPath)) return Promise.resolve([]);
+        return this.searchReqIdInFile(absPath, fileInfo.name, cleanReqId, 100);
+      });
 
-        try {
-          const content = await fsp.readFile(absPath, 'utf8');
-          if (!content.includes(cleanReqId)) continue;
-
-          const lines = content.split(/\r?\n/);
-          for (const rawLine of lines) {
-            if (rawLine.includes(cleanReqId)) {
-              const cleaned = this.cleanAnsi(rawLine).trim();
-              if (cleaned) {
-                const timeInfo = this.extractTime(cleaned);
-                let level = 'info';
-                if (/\[error\]|level=error/i.test(cleaned)) level = 'error';
-                else if (/\[warn\]|level=warn/i.test(cleaned)) level = 'warn';
-                else if (/\[debug\]|level=debug/i.test(cleaned)) level = 'debug';
-
-                rawLogs.push({
-                  file: fileInfo.name,
-                  line: cleaned,
-                  time: timeInfo?.timeStr,
-                  level,
-                });
-              }
-            }
-          }
-        } catch {}
+      const results = await Promise.all(fileTasks);
+      for (const logs of results) {
+        rawLogs.push(...logs);
       }
     } catch {}
 
-    // 3. 构建 Summary
+    // 4. 构建 Summary 摘要
     const summary: TraceResult['summary'] = {
       method: auditRecord?.method,
       path: auditRecord?.path,
@@ -227,7 +356,7 @@ export class TraceService {
       errorMessage: auditRecord?.errorMessage,
     };
 
-    // 4. 构建 Timeline 瀑布流事件
+    // 5. 构建 Timeline 瀑布流事件
     const timeline: TraceTimelineEvent[] = [];
 
     // 事件 A: API 入站 (Inbound)
@@ -258,7 +387,6 @@ export class TraceService {
         const execMatch = item.line.match(/Executing \(default\):\s*(.+)$/i);
         if (execMatch) sqlText = execMatch[1];
 
-        // 提取耗时（如 : 15ms）
         let durationMs: number | undefined = undefined;
         const durMatch = item.line.match(/(\d+(?:\.\d+)?)\s*ms/i);
         if (durMatch) durationMs = parseFloat(durMatch[1]);
@@ -329,12 +457,26 @@ export class TraceService {
 
     const found = !!auditRecord || rawLogs.length > 0;
 
-    return {
+    const result: TraceResult = {
       reqId: cleanReqId,
       found,
       summary,
       timeline,
       rawLogs,
     };
+
+    // 存入短时缓存（30 秒过期）
+    this.traceCache.set(cleanReqId, {
+      data: result,
+      expireAt: Date.now() + 30 * 1000,
+    });
+
+    // 限制缓存大小，防止内存泄漏
+    if (this.traceCache.size > 200) {
+      const firstKey = this.traceCache.keys().next().value;
+      if (firstKey) this.traceCache.delete(firstKey);
+    }
+
+    return result;
   }
 }

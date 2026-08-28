@@ -23,7 +23,7 @@ import {
   FolderOpenOutlined,
   FileTextOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 
 interface LogFileManagerModalProps {
   visible: boolean;
@@ -36,7 +36,7 @@ export const LogFileManagerModal: React.FC<LogFileManagerModalProps> = ({
   onClose,
   onFilesChanged,
 }) => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [loading, setLoading] = useState(false);
   const [files, setFiles] = useState<any[]>([]);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);

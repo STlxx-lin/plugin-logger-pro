@@ -25,7 +25,7 @@ import {
   ApiOutlined,
   RobotOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 import { AILogAnalysisDrawer } from './AILogAnalysisDrawer';
 
 const { Text } = Typography;
@@ -37,7 +37,7 @@ export interface TraceDrawerProps {
 }
 
 export const TraceDrawer: React.FC<TraceDrawerProps> = ({ visible, reqId, onClose }) => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [loading, setLoading] = useState(false);
   const [traceData, setTraceData] = useState<any>(null);
   const [aiDrawerVisible, setAiDrawerVisible] = useState(false);

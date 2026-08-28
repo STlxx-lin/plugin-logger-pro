@@ -14,20 +14,33 @@ import { AuditLogTab } from '../components/AuditLogTab';
 import { TraceTab } from '../components/TraceTab';
 import { ConfigTab } from '../components/ConfigTab';
 import { AlertTab } from '../components/AlertTab';
+import { LoggerProContext } from '../context/LoggerProContext';
+import { useAPIClient as useV1APIClient } from '../hooks/useAPIClient';
 
-export const LoggerProPage: React.FC = () => {
+export interface LoggerProPageProps {
+  api?: any;
+}
+
+export const LoggerProPage: React.FC<LoggerProPageProps> = ({ api: customApi }) => {
+  let defaultApi: any = null;
+  try {
+    defaultApi = useV1APIClient();
+  } catch {}
+  const api = customApi || defaultApi;
+
   const [activeTab, setActiveTab] = useState('dashboard');
 
   return (
-    <div style={{ padding: '20px 24px', background: '#f0f2f5', minHeight: '100%' }}>
-      <Card
-        bordered={false}
-        style={{
-          boxShadow: '0 1px 4px rgba(0,21,41,.08)',
-          borderRadius: 8,
-        }}
-        bodyStyle={{ padding: '16px 24px 24px' }}
-      >
+    <LoggerProContext.Provider value={{ api }}>
+      <div style={{ padding: '20px 24px', background: '#f0f2f5', minHeight: '100%' }}>
+        <Card
+          bordered={false}
+          style={{
+            boxShadow: '0 1px 4px rgba(0,21,41,.08)',
+            borderRadius: 8,
+          }}
+          bodyStyle={{ padding: '16px 24px 24px' }}
+        >
         <div style={{ marginBottom: 16 }}>
           <h2 style={{ margin: '0 0 4px 0', fontSize: 20, fontWeight: 600, color: '#1f1f1f' }}>
             📜 日志与审计管理 Pro (Logger Pro)
@@ -101,6 +114,7 @@ export const LoggerProPage: React.FC = () => {
         />
       </Card>
     </div>
+    </LoggerProContext.Provider>
   );
 };
 

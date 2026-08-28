@@ -24,13 +24,13 @@ import {
   ExportOutlined,
   DeploymentUnitOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 import { DiffModal } from './DiffModal';
 import { AuditLogExportDrawer } from './AuditLogExportDrawer';
 import { TraceDrawer } from './TraceDrawer';
 
 export const AuditLogTab: React.FC = () => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any[]>([]);
   const [total, setTotal] = useState(0);

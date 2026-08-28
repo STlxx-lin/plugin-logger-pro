@@ -36,10 +36,10 @@ import {
   LoadingOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 
 export const ConfigTab: React.FC = () => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);

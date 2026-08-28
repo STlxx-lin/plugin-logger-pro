@@ -24,7 +24,7 @@ import {
   CheckSquareOutlined,
   CloseSquareOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 
 export interface AuditLogExportDrawerProps {
   visible: boolean;
@@ -67,7 +67,7 @@ export const AuditLogExportDrawer: React.FC<AuditLogExportDrawerProps> = ({
   onClose,
   collections = [],
 }) => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [form] = Form.useForm();
   const [exporting, setExporting] = useState(false);
 

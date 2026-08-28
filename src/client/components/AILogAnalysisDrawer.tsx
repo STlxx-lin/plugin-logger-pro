@@ -35,7 +35,7 @@ import {
   ClearOutlined,
   DeploymentUnitOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 
 const { TextArea } = Input;
 const LOCAL_STORAGE_AI_RECORDS = 'nocobase_logger_ai_analysis_history';
@@ -66,7 +66,7 @@ export const AILogAnalysisDrawer: React.FC<AILogAnalysisDrawerProps> = ({
   initialLogText = '',
   context,
 }) => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [activeTab, setActiveTab] = useState<'analyze' | 'history'>('analyze');
   const [logText, setLogText] = useState(initialLogText);
   const [loading, setLoading] = useState(false);

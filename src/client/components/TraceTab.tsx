@@ -28,12 +28,12 @@ import {
   CloseCircleOutlined,
   FileTextOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 
 const { Text } = Typography;
 
 export const TraceTab: React.FC = () => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [reqIdInput, setReqIdInput] = useState('');
   const [currentReqId, setCurrentReqId] = useState<string | null>(null);
 

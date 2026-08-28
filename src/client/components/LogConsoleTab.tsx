@@ -26,7 +26,7 @@ import {
   RobotOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 import { LogFileManagerModal } from './LogFileManagerModal';
 import { AILogAnalysisDrawer } from './AILogAnalysisDrawer';
 
@@ -69,16 +69,13 @@ const extractFileDate = (file: any): string => {
   if (match) return match[1];
   if (file?.mtime) {
     const d = new Date(file.mtime);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
   return '';
 };
 
 export const LogConsoleTab: React.FC = () => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [files, setFiles] = useState<any[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string>('');

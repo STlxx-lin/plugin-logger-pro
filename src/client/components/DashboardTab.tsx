@@ -12,10 +12,10 @@ import {
   CopyOutlined,
   CodeOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 
 export const DashboardTab: React.FC = () => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
   const [viewingSql, setViewingSql] = useState<{ sql: string; durationMs: number; time: string } | null>(null);

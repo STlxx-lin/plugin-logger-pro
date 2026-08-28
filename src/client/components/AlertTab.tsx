@@ -27,10 +27,10 @@ import {
   CloseCircleOutlined,
   NotificationOutlined,
 } from '@ant-design/icons';
-import { useAPIClient } from '@nocobase/client';
+import { useLoggerProAPI } from '../context/LoggerProContext';
 
 export const AlertTab: React.FC = () => {
-  const api = useAPIClient();
+  const api = useLoggerProAPI();
   const [loading, setLoading] = useState(false);
   const [rules, setRules] = useState<any[]>([]);
 

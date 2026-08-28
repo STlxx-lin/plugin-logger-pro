@@ -1,4 +1,4 @@
-import { Plugin } from '@nocobase/server';
+import { Plugin, PluginManager } from '@nocobase/server';
 import path from 'path';
 import { LogConfigService } from './services/log-config.service';
 import { LogReaderService } from './services/log-reader.service';
@@ -13,6 +13,25 @@ import { setupSlowQueryMonitor } from './middlewares/slow-query';
 import { createLoggerProResource } from './actions/logger-pro';
 import { createCompatLoggerResource } from './actions/compat-logger';
 
+function ensurePluginEnvironment() {
+  if (!process.env.NODE_MODULES_PATH) {
+    process.env.NODE_MODULES_PATH = path.resolve(process.cwd(), 'node_modules');
+  }
+  if (PluginManager) {
+    const parsedNames = (PluginManager as any).parsedNames || ((PluginManager as any).parsedNames = {});
+    parsedNames['logger-pro'] = {
+      name: 'logger-pro',
+      packageName: '@nocobase/plugin-logger-pro',
+    };
+    parsedNames['@nocobase/plugin-logger-pro'] = {
+      name: 'logger-pro',
+      packageName: '@nocobase/plugin-logger-pro',
+    };
+  }
+}
+
+ensurePluginEnvironment();
+
 export class PluginLoggerProServer extends Plugin {
   public configService!: LogConfigService;
   public readerService!: LogReaderService;
@@ -22,6 +41,10 @@ export class PluginLoggerProServer extends Plugin {
   public auditExportService!: AuditExportService;
   public traceService!: TraceService;
   public aiAnalyzerService!: AIAnalyzerService;
+
+  static async staticImport() {
+    ensurePluginEnvironment();
+  }
 
   async beforeLoad() {
     this.db.import({

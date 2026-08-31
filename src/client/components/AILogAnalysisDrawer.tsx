@@ -338,8 +338,17 @@ export const AILogAnalysisDrawer: React.FC<AILogAnalysisDrawerProps> = ({
     );
   };
 
+  // HTML 实体转义：分析报告可能原样回显日志行（含用户可控内容），必须先转义再渲染
+  const escapeHtml = (str: string) =>
+    str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   const formatInlineCode = (str: string) => {
-    return str
+    return escapeHtml(str)
       .replace(/`([^`]+)`/g, '<code style="color: #c41d7f; background: #fff0f6; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px;">$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   };

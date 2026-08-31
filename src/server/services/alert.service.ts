@@ -25,6 +25,36 @@ export class AlertService {
     this.app = app;
   }
 
+  /**
+   * Webhook URL 安全校验：
+   * 1. 仅允许 http/https 协议（阻断 file://、gopher:// 等危险协议）；
+   * 2. 封禁云厂商元数据端点（服务端请求伪造的最高价值目标）。
+   * 注意：自建内网接收端属合法场景，故默认不封禁私网网段。
+   */
+  private assertSafeWebhookUrl(rawUrl: string) {
+    if (!rawUrl || typeof rawUrl !== 'string') return;
+    let u: URL;
+    try {
+      u = new URL(rawUrl);
+    } catch {
+      throw new Error(`Invalid webhook URL: ${rawUrl.slice(0, 100)}`);
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+      throw new Error(`Webhook URL protocol not allowed: ${u.protocol}`);
+    }
+    const host = u.hostname.toLowerCase();
+    const blockedEndpoints = [
+      '169.254.169.254', // AWS/阿里云/华为云等元数据
+      '100.100.100.200', // 阿里云 ECS 元数据
+      'metadata.google.internal', // GCP 元数据
+      'metadata', // 通用元数据主机名
+      'fd00:ec2::254', // AWS IPv6 元数据
+    ];
+    if (blockedEndpoints.includes(host)) {
+      throw new Error(`Webhook URL points to a blocked metadata endpoint: ${host}`);
+    }
+  }
+
   async testAlert(ruleData: any): Promise<{ success: boolean; error?: string }> {
     const testContext: AlertContext = {
       title: `[测试告警] ${ruleData.name || 'Logger Pro Alert Rule Test'}`,
@@ -150,6 +180,11 @@ export class AlertService {
   }
 
   private async sendToChannel(channelType: string, config: any, context: AlertContext) {
+    // 发起任何出站请求前先校验 webhook 目标（notification-manager 走系统内部通道，不适用）
+    if (channelType !== ALERT_CHANNELS.NOTIFICATION_MANAGER) {
+      this.assertSafeWebhookUrl(config?.webhookUrl);
+    }
+
     const title = context.title || '【NocoBase 系统异常告警】';
     const timeStr = new Date().toLocaleString();
     const markdownContent = [

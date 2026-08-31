@@ -341,20 +341,58 @@ ${lines.slice(0, 6).map((l) => `- \`${l.trim()}\``).join('\n')}
 3. 查看关联的【全链路追踪】，确认在报错前最后执行的 SQL 查询或中间件流转情况。`;
   }
 
-  // 确保 logger_ai_records 集合与表结构已就绪
+  // 确保 logger_ai_records 集合与表结构已就绪（进程内仅初始化一次）
+  private collectionReady = false;
+
   private async ensureCollection() {
+    if (this.collectionReady) return;
+
     try {
       const collection = this.app.db.getCollection('logger_ai_records');
       if (collection) {
         await collection.sync();
+        this.collectionReady = true;
+        return;
       }
     } catch {}
 
-    // SQL 保底建表 (兼容 SQLite 与 MySQL)
+    // SQL 兜底建表（仅集合未注册时执行）：按方言区分，避免 SQLite 专属 DDL 在 MySQL/PG 静默失败
     try {
       if (this.app.db.sequelize) {
-        await this.app.db.sequelize.query(`
-          CREATE TABLE IF NOT EXISTS logger_ai_records (
+        const dialect = this.app.db.sequelize?.getDialect?.() || 'sqlite';
+        let ddl: string;
+        if (dialect === 'mysql' || dialect === 'mariadb') {
+          ddl = `CREATE TABLE IF NOT EXISTS logger_ai_records (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            analyzerName VARCHAR(255),
+            employeeName VARCHAR(255),
+            llmService VARCHAR(255),
+            model VARCHAR(255),
+            logSummary VARCHAR(255),
+            logText LONGTEXT,
+            context LONGTEXT,
+            analysisReport LONGTEXT,
+            durationMs BIGINT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+          )`;
+        } else if (dialect === 'postgres') {
+          ddl = `CREATE TABLE IF NOT EXISTS logger_ai_records (
+            id SERIAL PRIMARY KEY,
+            analyzerName VARCHAR(255),
+            employeeName VARCHAR(255),
+            llmService VARCHAR(255),
+            model VARCHAR(255),
+            logSummary VARCHAR(255),
+            logText TEXT,
+            context TEXT,
+            analysisReport TEXT,
+            durationMs BIGINT,
+            createdAt TIMESTAMPTZ DEFAULT NOW(),
+            updatedAt TIMESTAMPTZ DEFAULT NOW()
+          )`;
+        } else {
+          ddl = `CREATE TABLE IF NOT EXISTS logger_ai_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             analyzerName VARCHAR(255),
             employeeName VARCHAR(255),
@@ -367,8 +405,10 @@ ${lines.slice(0, 6).map((l) => `- \`${l.trim()}\``).join('\n')}
             durationMs INTEGER,
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-          )
-        `);
+          )`;
+        }
+        await this.app.db.sequelize.query(ddl);
+        this.collectionReady = true;
       }
     } catch {}
   }
@@ -406,10 +446,10 @@ ${lines.slice(0, 6).map((l) => `- \`${l.trim()}\``).join('\n')}
         });
         return created?.id;
       } else if (this.app.db.sequelize) {
-        // 直接 SQL 插入兜底
+        // 直接 SQL 插入兜底（时间戳经参数绑定写入，方言无关）
         const [res] = await this.app.db.sequelize.query(
           `INSERT INTO logger_ai_records (analyzerName, employeeName, llmService, model, logSummary, logText, analysisReport, durationMs, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           {
             replacements: [
               data.analyzerName,
@@ -420,6 +460,8 @@ ${lines.slice(0, 6).map((l) => `- \`${l.trim()}\``).join('\n')}
               data.logText,
               data.analysisReport,
               data.durationMs,
+              new Date(),
+              new Date(),
             ],
           },
         );

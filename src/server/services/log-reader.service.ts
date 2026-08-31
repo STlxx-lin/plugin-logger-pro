@@ -32,6 +32,12 @@ export interface TailLogOptions {
 
 const ANSI_REGEX = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]|\x1B\[[0-9;]*[a-zA-Z]/g;
 
+// 粗筛灾难性回溯特征：量词直接作用于内部已含量词的分组，如 (a+)+、(\d*)*、(?:a+)*
+const DANGEROUS_REGEX_PATTERN = /\((?:[^()\\]|\\.)*[+*][^()]*\)[+*{]|\((?:[^()\\]|\\.)*\{\d+,?\d*\}[^()]*\)[+*{]/;
+
+// 单次读取日志的时间预算（毫秒），防止恶意正则或超大文件长时间占用事件循环
+const MAX_SCAN_MS = 10_000;
+
 function cleanAnsi(str: string): string {
   return str ? str.replace(ANSI_REGEX, '') : '';
 }
@@ -45,6 +51,19 @@ export class LogReaderService {
 
   getLogBasePath(): string {
     return getLoggerFilePath(this.app.name || 'main');
+  }
+
+  /**
+   * 统一解析并校验日志文件路径：resolve 后必须严格位于日志根目录内
+   * （含路径分隔符边界，防止 "logs" 前缀匹配 "logs-evil" 兄弟目录绕过）
+   */
+  private resolveSafeLogPath(fileName: string): string {
+    const basePath = this.getLogBasePath();
+    const resolved = path.resolve(basePath, typeof fileName === 'string' ? fileName : '');
+    if (resolved === basePath || !resolved.startsWith(basePath + path.sep)) {
+      throw new Error(`Log file not found: ${fileName}`);
+    }
+    return resolved;
   }
 
   private formatBytes(bytes: number): string {
@@ -98,30 +117,34 @@ export class LogReaderService {
     return result.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
   }
 
-  async readLogLines(options: ReadLogOptions): Promise<{ lines: string[]; totalMatched: number; totalSize: number }> {
-    const basePath = this.getLogBasePath();
-    const safeRel = path.normalize(options.fileName).replace(/^(\.\.(\/|\\|$))+/, '');
-    const targetFile = path.resolve(basePath, safeRel);
+  async readLogLines(options: ReadLogOptions): Promise<{ lines: string[]; totalMatched: number; totalSize: number; truncated?: boolean }> {
+    const targetFile = this.resolveSafeLogPath(options.fileName);
 
-    if (!targetFile.startsWith(basePath) || !fs.existsSync(targetFile)) {
+    if (!fs.existsSync(targetFile)) {
       throw new Error(`Log file not found: ${options.fileName}`);
     }
 
     const stat = await fsp.stat(targetFile);
     const maxLines = options.lines && options.lines > 0 ? Math.min(options.lines, 5000) : 500;
-    const keyword = options.keyword?.trim();
+    const keyword = options.keyword?.trim().slice(0, 200);
     const level = options.level?.trim().toUpperCase();
 
     let regex: RegExp | null = null;
     if (keyword) {
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       try {
-        regex = options.isRegex ? new RegExp(keyword, 'i') : new RegExp(keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        if (options.isRegex && !DANGEROUS_REGEX_PATTERN.test(keyword)) {
+          regex = new RegExp(keyword, 'i');
+        } else {
+          // 非正则模式、用户正则命中灾难性回溯特征或编译失败时，一律降级为字面量搜索（防 ReDoS）
+          regex = new RegExp(escaped, 'i');
+        }
       } catch {
-        regex = new RegExp(keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        regex = new RegExp(escaped, 'i');
       }
     }
 
-    return new Promise<{ lines: string[]; totalMatched: number; totalSize: number }>((resolve, reject) => {
+    return new Promise<{ lines: string[]; totalMatched: number; totalSize: number; truncated?: boolean }>((resolve, reject) => {
       const fileStream = fs.createReadStream(targetFile, { encoding: 'utf-8' });
       const rl = readline.createInterface({
         input: fileStream as any,
@@ -130,8 +153,18 @@ export class LogReaderService {
 
       const collectedLines: string[] = [];
       let totalMatched = 0;
+      let linesScanned = 0;
+      let truncated = false;
+      const scanStart = Date.now();
 
       rl.on('line', (rawLine: string) => {
+        linesScanned++;
+        // 时间预算：达到上限立即停止扫描，返回已收集结果
+        if ((linesScanned & 511) === 0 && Date.now() - scanStart > MAX_SCAN_MS) {
+          truncated = true;
+          rl.close();
+          return;
+        }
         const line = cleanAnsi(rawLine);
         if (!line.trim()) return;
 
@@ -150,7 +183,9 @@ export class LogReaderService {
         }
 
         if (isMatch && regex) {
-          if (!regex.test(line)) {
+          // 单行探针截断：限制单次正则回溯的输入规模
+          const probe = line.length > 4096 ? line.slice(0, 4096) : line;
+          if (!regex.test(probe)) {
             isMatch = false;
           }
         }
@@ -173,6 +208,7 @@ export class LogReaderService {
           lines: finalLines,
           totalMatched,
           totalSize: stat.size,
+          truncated: truncated || undefined,
         });
       });
 
@@ -186,11 +222,9 @@ export class LogReaderService {
   }
 
   async tailLog(options: TailLogOptions): Promise<{ lines: string[]; newOffset: number; hasMore: boolean; fileSize: number }> {
-    const basePath = this.getLogBasePath();
-    const safeRel = path.normalize(options.fileName).replace(/^(\.\.(\/|\\|$))+/, '');
-    const targetFile = path.resolve(basePath, safeRel);
+    const targetFile = this.resolveSafeLogPath(options.fileName);
 
-    if (!targetFile.startsWith(basePath) || !fs.existsSync(targetFile)) {
+    if (!fs.existsSync(targetFile)) {
       throw new Error(`Log file not found: ${options.fileName}`);
     }
 
@@ -235,11 +269,9 @@ export class LogReaderService {
   }
 
   async clearFile(fileName: string): Promise<boolean> {
-    const basePath = this.getLogBasePath();
-    const safeRel = path.normalize(fileName).replace(/^(\.\.(\/|\\|$))+/, '');
-    const targetFile = path.resolve(basePath, safeRel);
+    const targetFile = this.resolveSafeLogPath(fileName);
 
-    if (!targetFile.startsWith(basePath) || !fs.existsSync(targetFile)) {
+    if (!fs.existsSync(targetFile)) {
       throw new Error(`Log file not found: ${fileName}`);
     }
 
@@ -248,11 +280,9 @@ export class LogReaderService {
   }
 
   async deleteFile(fileName: string): Promise<boolean> {
-    const basePath = this.getLogBasePath();
-    const safeRel = path.normalize(fileName).replace(/^(\.\.(\/|\\|$))+/, '');
-    const targetFile = path.resolve(basePath, safeRel);
+    const targetFile = this.resolveSafeLogPath(fileName);
 
-    if (!targetFile.startsWith(basePath) || !fs.existsSync(targetFile)) {
+    if (!fs.existsSync(targetFile)) {
       throw new Error(`Log file not found: ${fileName}`);
     }
 

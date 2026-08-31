@@ -71,7 +71,11 @@ export class AuditExportService {
     const rows = records.map((rec) => {
       return selectedFieldKeys
         .map((k) => {
-          const val = this.formatCellValue(k, rec);
+          let val = this.formatCellValue(k, rec);
+          // 中和 CSV 公式注入：Excel 会将以 = + - @ 等开头的单元格解析为公式/DDE 执行
+          if (/^[=+\-@\t\r]/.test(val)) {
+            val = `'${val}`;
+          }
           // 转义双引号
           return `"${val.replace(/"/g, '""')}"`;
         })

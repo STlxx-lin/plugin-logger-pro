@@ -26,6 +26,16 @@ function getTarFs() {
   return tarFsInstance;
 }
 
+// 清理接口（cleanTableData/cleanBatch/getCleanTotalCount）允许操作的数据表白名单：
+// 仅限本插件自身的 logger_* 数据表，防止持有插件权限的角色清空任意业务表
+const CLEANABLE_COLLECTIONS = new Set([
+  'logger_audit_logs',
+  'logger_alert_logs',
+  'logger_ai_records',
+  'logger_alert_rules',
+  'logger_configs',
+]);
+
 export class LogRetentionService {
   private app: Application;
   private configService: LogConfigService;
@@ -299,15 +309,57 @@ export class LogRetentionService {
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
   }
 
+  /**
+   * 校验待归档文件是否安全：必须严格位于日志根目录内（含路径分隔符边界），
+   * 仅允许 .log/.txt 日志文本文件，并通过 realpath 防止符号链接逃逸。
+   * 返回归档用的相对路径，非法或不存在时返回 null。
+   */
+  private async resolveSafeArchiveEntry(basePath: string, fileName: string): Promise<string | null> {
+    if (typeof fileName !== 'string' || !fileName.trim()) {
+      return null;
+    }
+    const resolved = path.resolve(basePath, fileName);
+    // 词法边界：防止 "x/../../secret" 类嵌入式穿越；带分隔符比较防止兄弟目录前缀绕过
+    if (resolved === basePath || !resolved.startsWith(basePath + path.sep)) {
+      return null;
+    }
+    if (!/\.(log|txt)$/i.test(resolved)) {
+      return null;
+    }
+    try {
+      // 真实路径边界：防止日志目录内的符号链接指向外部文件
+      const [realEntry, realBase] = await Promise.all([fsp.realpath(resolved), fsp.realpath(basePath)]);
+      if (realEntry !== realBase && !realEntry.startsWith(realBase + path.sep)) {
+        return null;
+      }
+      const stat = await fsp.stat(resolved);
+      if (!stat.isFile()) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+    return path.relative(basePath, resolved).replace(/\\/g, '/');
+  }
+
   async createArchiveStream(fileNames?: string[]): Promise<stream.Readable> {
     const basePath = this.getLogBasePath();
     let entries: string[] = [];
 
     if (fileNames && fileNames.length > 0) {
-      entries = fileNames.map((f) => {
-        const safe = path.normalize(f).replace(/^(\.\.(\/|\\|$))+/, '');
-        return safe;
-      });
+      const validated: string[] = [];
+      for (const f of fileNames) {
+        const entry = await this.resolveSafeArchiveEntry(basePath, f);
+        if (entry) {
+          validated.push(entry);
+        } else {
+          this.app.logger?.warn?.(`[LoggerPro] Skipped illegal or missing log file for archive: ${f}`);
+        }
+      }
+      if (validated.length === 0) {
+        throw new Error('No valid log files available for archive.');
+      }
+      entries = validated;
     } else {
       const allFiles: string[] = [];
       const scan = async (dir: string, rel = '') => {
@@ -470,6 +522,9 @@ export class LogRetentionService {
     if (!collectionName || typeof collectionName !== 'string') {
       throw new Error('collectionName is required');
     }
+    if (!CLEANABLE_COLLECTIONS.has(collectionName)) {
+      throw new Error(`Collection ${collectionName} is not allowed to be cleaned`);
+    }
     const collection = this.app.db.getCollection(collectionName);
     const repo = this.app.db.getRepository(collectionName);
     if (!collection && !repo) {
@@ -502,6 +557,9 @@ export class LogRetentionService {
    * 获取待清理的数据总量（原生 SQL 绝对精准计数，绝不受过滤条件序列化或软删除干扰）
    */
   async getCleanTotalCount(collectionName = 'logger_audit_logs', days?: number): Promise<{ totalCount: number }> {
+    if (!CLEANABLE_COLLECTIONS.has(collectionName)) {
+      return { totalCount: 0 };
+    }
     const collection = this.app.db.getCollection(collectionName);
     const repo = this.app.db.getRepository(collectionName);
     if (!collection && !repo) {
@@ -554,6 +612,9 @@ export class LogRetentionService {
     days?: number,
     limit = 20000,
   ): Promise<{ remainingCount: number }> {
+    if (!CLEANABLE_COLLECTIONS.has(collectionName)) {
+      throw new Error(`Collection ${collectionName} is not allowed to be cleaned`);
+    }
     const collection = this.app.db.getCollection(collectionName);
     const repo = this.app.db.getRepository(collectionName);
     if (!collection && !repo) {

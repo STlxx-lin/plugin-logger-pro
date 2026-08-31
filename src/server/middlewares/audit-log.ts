@@ -39,6 +39,23 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
     'batchDestroy',
   ]);
 
+  // 本插件自身（loggerPro/logger 资源）的破坏性或写类 action：
+  // 原先被资源级排除导致高危操作无审计留痕，此处强制纳入审计，且不受用户排除规则影响
+  const SELF_AUDITED_ACTIONS = new Set([
+    'clearFile',
+    'deleteFile',
+    'download',
+    'cleanLogs',
+    'updateConfigs',
+    'testAlert',
+    'cleanTableData',
+    'cleanExpiredAuditLogs',
+    'cleanBatch',
+    'deleteAIAnalysisRecord',
+    'clearAIAnalysisHistory',
+    'collect',
+  ]);
+
   return async function auditLogMiddleware(ctx: Context, next: Next) {
     const enabled = configService.getBoolean(CONFIG_KEYS.AUDIT_LOG_ENABLED, true);
     if (!enabled) {
@@ -55,56 +72,63 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
     const actionName = action.actionName || '';
     const method = ctx.method?.toUpperCase() || 'GET';
 
+    // 本插件自身的破坏性/写类 action 强制留痕：绕过排除规则 1~5（含只读 POST 过滤与用户排除配置）
+    const isSelfAudit =
+      (resourceName === 'loggerPro' || resourceName === 'logger') && SELF_AUDITED_ACTIONS.has(actionName);
+
     // 1. 排除系统内置核心集合与插件管理接口
     if (
-      resourceName === 'pm' ||
-      resourceName === 'applicationPlugins' ||
-      actionName === 'enable' ||
-      actionName === 'disable' ||
-      actionName === 'install' ||
-      actionName === 'add' ||
-      (collectionName && EXCLUDED_COLLECTIONS.has(collectionName)) ||
-      (resourceName && EXCLUDED_COLLECTIONS.has(resourceName))
+      !isSelfAudit &&
+      (resourceName === 'pm' ||
+        resourceName === 'applicationPlugins' ||
+        actionName === 'enable' ||
+        actionName === 'disable' ||
+        actionName === 'install' ||
+        actionName === 'add' ||
+        (collectionName && EXCLUDED_COLLECTIONS.has(collectionName)) ||
+        (resourceName && EXCLUDED_COLLECTIONS.has(resourceName)))
     ) {
       return next();
     }
 
     // 2. 检查用户自定义排除数据表与操作动作
-    const userExcludeCollections: string[] = configService.getJson(CONFIG_KEYS.AUDIT_EXCLUDE_COLLECTIONS, []);
-    if (
-      userExcludeCollections.length > 0 &&
-      (userExcludeCollections.includes(collectionName) || userExcludeCollections.includes(resourceName))
-    ) {
-      return next();
-    }
+    if (!isSelfAudit) {
+      const userExcludeCollections: string[] = configService.getJson(CONFIG_KEYS.AUDIT_EXCLUDE_COLLECTIONS, []);
+      if (
+        userExcludeCollections.length > 0 &&
+        (userExcludeCollections.includes(collectionName) || userExcludeCollections.includes(resourceName))
+      ) {
+        return next();
+      }
 
-    const userExcludeActions: string[] = configService.getJson(CONFIG_KEYS.AUDIT_EXCLUDE_ACTIONS, []);
-    if (userExcludeActions.length > 0 && actionName && userExcludeActions.includes(actionName)) {
-      return next();
-    }
+      const userExcludeActions: string[] = configService.getJson(CONFIG_KEYS.AUDIT_EXCLUDE_ACTIONS, []);
+      if (userExcludeActions.length > 0 && actionName && userExcludeActions.includes(actionName)) {
+        return next();
+      }
 
-    // 3. 智能过滤只读类 POST 请求（如 list*, get*, check*, sync*, count*, unread* 等）
-    const ignoreReadonlyPost = configService.getBoolean(CONFIG_KEYS.AUDIT_IGNORE_READONLY_POST, true);
-    if (ignoreReadonlyPost && method === 'POST') {
-      const isReadonlyName =
-        /^(list|get|find|check|sync|count|unread|search|query|export|download|filter|paginate)/i.test(actionName) ||
-        /(List|Count|Meta|Mine|ByUser|Enabled|Accessible|Check|Counts|Info)$/i.test(actionName);
-      if (isReadonlyName) {
+      // 3. 智能过滤只读类 POST 请求（如 list*, get*, check*, sync*, count*, unread* 等）
+      const ignoreReadonlyPost = configService.getBoolean(CONFIG_KEYS.AUDIT_IGNORE_READONLY_POST, true);
+      if (ignoreReadonlyPost && method === 'POST') {
+        const isReadonlyName =
+          /^(list|get|find|check|sync|count|unread|search|query|export|download|filter|paginate)/i.test(actionName) ||
+          /(List|Count|Meta|Mine|ByUser|Enabled|Accessible|Check|Counts|Info)$/i.test(actionName);
+        if (isReadonlyName) {
+          return next();
+        }
+      }
+
+      // 4. 检查是否配置了特定数据表白名单（若配置了白名单，则仅审计白名单中的表）
+      const allowedCollections: string[] = configService.getJson(CONFIG_KEYS.AUDIT_COLLECTIONS, []);
+      if (allowedCollections.length > 0 && collectionName && !allowedCollections.includes(collectionName)) {
         return next();
       }
     }
 
-    // 4. 检查是否配置了特定数据表白名单（若配置了白名单，则仅审计白名单中的表）
-    const allowedCollections: string[] = configService.getJson(CONFIG_KEYS.AUDIT_COLLECTIONS, []);
-    if (allowedCollections.length > 0 && collectionName && !allowedCollections.includes(collectionName)) {
-      return next();
-    }
-
-    // 5. 仅对写操作或核心审计 action 进行记录
+    // 5. 仅对写操作或核心审计 action 进行记录（自审计 action 无论如何都记录）
     const isWriteMethod = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
     const isAuditedAction = actionName ? AUDITED_ACTIONS.has(actionName) : false;
 
-    if (!isWriteMethod && !isAuditedAction) {
+    if (!isSelfAudit && !isWriteMethod && !isAuditedAction) {
       return next();
     }
 
@@ -263,16 +287,23 @@ async function saveAuditLog(app: Application, payload: any) {
   }
 }
 
-const SENSITIVE_KEYS = new Set([
+// 敏感字段脱敏：归一化（小写、去分隔符）后片段匹配，覆盖 apiKey/api_key/clientSecret/Password 等常见变体
+const SENSITIVE_KEY_FRAGMENTS = [
   'password',
   'passwd',
   'secret',
   'token',
-  'accessToken',
-  'refreshToken',
-  'privateKey',
+  'privatekey',
   'authorization',
-]);
+  'credential',
+  'apikey',
+  'accesskey',
+];
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = String(key).toLowerCase().replace(/[\s_-]/g, '');
+  return SENSITIVE_KEY_FRAGMENTS.some((frag) => normalized.includes(frag));
+}
 
 /**
  * 智能截断与脱敏（过滤超长文本、富文本、Base64 与密码）
@@ -307,7 +338,7 @@ function sanitizeAndTruncate(val: any, maxStrLen = 300, depth = 0): any {
   if (typeof val === 'object') {
     const res: Record<string, any> = {};
     for (const key of Object.keys(val)) {
-      if (SENSITIVE_KEYS.has(key)) {
+      if (isSensitiveKey(key)) {
         res[key] = '******';
       } else {
         res[key] = sanitizeAndTruncate(val[key], maxStrLen, depth + 1);
@@ -333,7 +364,7 @@ function extractLeanData(data: any, diffKeys?: Set<string>): any {
 
   for (const k of keysToExtract) {
     if (k in data) {
-      if (SENSITIVE_KEYS.has(k)) {
+      if (isSensitiveKey(k)) {
         res[k] = '******';
       } else {
         res[k] = sanitizeAndTruncate(data[k]);

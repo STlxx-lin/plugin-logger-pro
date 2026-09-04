@@ -129,6 +129,32 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
     }
 
     // 关联子表对象数组
+    const onlyHasIds = value.every(
+      (item) => typeof item === 'object' && item && Object.keys(item).filter((k) => k !== 'id' && k !== 'ID' && k !== 'key').length === 0
+    );
+
+    if (onlyHasIds) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 11, color: '#8c8c8c' }}>📦 包含 {value.length} 条关联记录</div>
+          <Space wrap size={[6, 6]}>
+            {value.map((item: any, idx: number) => {
+              const displayId = item.id || item.ID || item.key || item;
+              return (
+                <Tag
+                  key={idx}
+                  color={type === 'old' ? 'volcano' : type === 'new' ? 'green' : 'cyan'}
+                  style={{ fontSize: 12, padding: '2px 8px', borderRadius: 4 }}
+                >
+                  #{displayId}
+                </Tag>
+              );
+            })}
+          </Space>
+        </div>
+      );
+    }
+
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
@@ -155,6 +181,7 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
                 return <Tag key={idx}>{String(item)}</Tag>;
               }
               const displayId = item.id || item.ID || item.key;
+              const otherProps = Object.entries(item).filter(([k]) => k !== 'id' && k !== 'ID' && k !== 'key');
               return (
                 <Card
                   key={idx}
@@ -169,17 +196,14 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
                 >
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                     {displayId && <Tag color="cyan">#{displayId}</Tag>}
-                    {Object.entries(item)
-                      .filter(([k]) => k !== 'id' && k !== 'ID' && k !== 'key')
-                      .slice(0, 5)
-                      .map(([k, v]: [string, any]) => (
-                        <span key={k} style={{ fontSize: 12, marginRight: 6 }}>
-                          <span style={{ color: '#8c8c8c' }}>{k}: </span>
-                          <strong style={{ color: '#262626' }}>
-                            {typeof v === 'object' ? (v ? '[Object]' : 'null') : String(v ?? '-')}
-                          </strong>
-                        </span>
-                      ))}
+                    {otherProps.slice(0, 5).map(([k, v]: [string, any]) => (
+                      <span key={k} style={{ fontSize: 12, marginRight: 6 }}>
+                        <span style={{ color: '#8c8c8c' }}>{k}: </span>
+                        <strong style={{ color: '#262626' }}>
+                          {typeof v === 'object' ? (v ? '[Object]' : 'null') : String(v ?? '-')}
+                        </strong>
+                      </span>
+                    ))}
                   </div>
                 </Card>
               );

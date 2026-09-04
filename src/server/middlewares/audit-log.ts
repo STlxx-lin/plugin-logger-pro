@@ -158,10 +158,34 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
       try {
         const repo = app.db.getRepository(collectionName);
         if (repo) {
+          const collection = app.db.getCollection(collectionName);
+          const submittedValues = action.params?.values || {};
+          const appendsToLoad: string[] = [];
+
+          if (collection) {
+            for (const key of Object.keys(submittedValues)) {
+              const field = collection.getField(key);
+              if (
+                field &&
+                (field.type === 'hasMany' ||
+                  field.type === 'belongsToMany' ||
+                  field.type === 'hasOne' ||
+                  field.type === 'belongsTo' ||
+                  field.type === 'array')
+              ) {
+                appendsToLoad.push(key);
+              }
+            }
+          }
+
+          const findOptions: any = {
+            appends: appendsToLoad.length > 0 ? appendsToLoad : undefined,
+          };
+
           if (recordId) {
-            beforeData = await repo.findOne({ filterByTk: recordId });
+            beforeData = await repo.findOne({ ...findOptions, filterByTk: recordId });
           } else if (action.params?.filter) {
-            beforeData = await repo.findOne({ filter: action.params.filter });
+            beforeData = await repo.findOne({ ...findOptions, filter: action.params.filter });
           }
           if (beforeData) {
             beforeData = normalizeModelData(beforeData);

@@ -343,7 +343,7 @@ function normalizeModelData(data: any): any {
     return data.map((item) => normalizeModelData(item));
   }
 
-  // 5. 纯对象处理：剔除 Sequelize 内部私有属性
+  // 5. 纯对象处理：剔除 Sequelize 内部私有属性并递归清洗所有属性值
   if (typeof data === 'object') {
     const clean: Record<string, any> = {};
     for (const [key, val] of Object.entries(data)) {
@@ -356,7 +356,7 @@ function normalizeModelData(data: any): any {
       ) {
         continue;
       }
-      clean[key] = val;
+      clean[key] = normalizeModelData(val);
     }
     return clean;
   }

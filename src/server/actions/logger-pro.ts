@@ -155,6 +155,36 @@ export function createLoggerProResource(
         await next();
       },
 
+      getCollectionFields: async (ctx: Context, next: Next) => {
+        const params = getParams(ctx);
+        const { collectionName } = params;
+        if (!collectionName) {
+          ctx.throw(400, 'collectionName is required');
+        }
+        const collection = ctx.app.db.getCollection(String(collectionName));
+        if (!collection) {
+          ctx.body = {};
+          await next();
+          return;
+        }
+        const fieldsMap: Record<string, { title: string; type?: string; uiSchema?: any }> = {};
+        if (collection.fields) {
+          for (const [name, field] of collection.fields.entries()) {
+            const title =
+              (field.options as any)?.uiSchema?.title ||
+              (field.options as any)?.title ||
+              name;
+            fieldsMap[name] = {
+              title,
+              type: field.type || (field.options as any)?.type,
+              uiSchema: (field.options as any)?.uiSchema,
+            };
+          }
+        }
+        ctx.body = fieldsMap;
+        await next();
+      },
+
       exportAuditLogs: async (ctx: Context, next: Next) => {
         const params = getParams(ctx);
         const format = (params.format as 'csv' | 'xlsx') || 'xlsx';

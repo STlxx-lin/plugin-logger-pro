@@ -136,25 +136,42 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
     const recordDiff = configService.getBoolean(CONFIG_KEYS.AUDIT_RECORD_DIFF, true);
 
     let beforeData: any = null;
-    const recordId = action.params?.filterByTk || action.params?.values?.id;
+    let recordId: any =
+      action.params?.filterByTk ||
+      action.params?.values?.id ||
+      (typeof action.params?.filter === 'object' && action.params.filter?.id) ||
+      ctx.params?.id ||
+      null;
+
+    const isUpdateAction =
+      actionName === 'update' ||
+      actionName === 'set' ||
+      actionName === 'toggle' ||
+      actionName === 'batchUpdate' ||
+      method === 'PUT' ||
+      method === 'PATCH';
+    const isDestroyAction = actionName === 'destroy' || actionName === 'batchDestroy' || method === 'DELETE';
+    const isCreateAction = actionName === 'create' || actionName === 'batchCreate' || actionName === 'firstOrCreate';
 
     // 如果是更新或删除操作，尝试获取修改前快照
-    if (
-      recordDiff &&
-      collectionName &&
-      recordId &&
-      (actionName === 'update' || actionName === 'destroy' || method === 'PUT' || method === 'DELETE')
-    ) {
+    if (recordDiff && collectionName && (isUpdateAction || isDestroyAction)) {
       try {
         const repo = app.db.getRepository(collectionName);
         if (repo) {
-          beforeData = await repo.findOne({ filterByTk: recordId });
-          if (beforeData && typeof beforeData.toJSON === 'function') {
-            beforeData = beforeData.toJSON();
+          if (recordId) {
+            beforeData = await repo.findOne({ filterByTk: recordId });
+          } else if (action.params?.filter) {
+            beforeData = await repo.findOne({ filter: action.params.filter });
+          }
+          if (beforeData) {
+            beforeData = normalizeModelData(beforeData);
+            if (!recordId && beforeData?.id) {
+              recordId = beforeData.id;
+            }
           }
         }
       } catch (err) {
-        // 快照获取失败不阻断流程
+        // 快照获取失败不阻断主业务流程
       }
     }
 
@@ -172,48 +189,55 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
 
       let afterData: any = null;
       let diffData: any = null;
-      const diffKeys = new Set<string>();
+      let diffKeys = new Set<string>();
 
       if (recordDiff && !errorOccurred) {
-        // 如果是创建或更新，尝试获取变更后的数据
-        if (actionName === 'create' || method === 'POST') {
-          afterData = ctx.body?.data || ctx.body;
-        } else if (actionName === 'update' || method === 'PUT' || method === 'PATCH') {
-          if (collectionName && recordId) {
+        // 尝试从响应体获取变更后的数据并标准化
+        const rawResponseBody = ctx.body?.data !== undefined && ctx.body.id === undefined ? ctx.body.data : ctx.body;
+        const normalizedResponseBody = normalizeModelData(rawResponseBody);
+
+        if (isCreateAction) {
+          afterData = normalizedResponseBody;
+        } else if (isUpdateAction) {
+          afterData = normalizedResponseBody;
+
+          // 若响应体中未包含完整的记录字段（例如只返回受影响行数），尝试按 ID 重新查询最新快照
+          const effectiveRecordId = recordId || afterData?.id;
+          if (
+            (!afterData || typeof afterData !== 'object' || Object.keys(afterData).length <= 2) &&
+            collectionName &&
+            effectiveRecordId
+          ) {
             try {
               const repo = app.db.getRepository(collectionName);
               if (repo) {
-                const refreshed = await repo.findOne({ filterByTk: recordId });
-                if (refreshed && typeof refreshed.toJSON === 'function') {
-                  afterData = refreshed.toJSON();
+                const refreshed = await repo.findOne({ filterByTk: effectiveRecordId });
+                if (refreshed) {
+                  afterData = normalizeModelData(refreshed);
                 }
               }
             } catch {}
           }
         }
 
-        // 计算字段差异，并记录产生差异的 key
-        if (beforeData && afterData && typeof beforeData === 'object' && typeof afterData === 'object') {
-          diffData = {};
-          const allKeys = new Set([...Object.keys(beforeData), ...Object.keys(afterData)]);
-          for (const k of allKeys) {
-            if (k === 'updatedAt' || k === 'createdAt') continue;
-            const bVal = JSON.stringify(beforeData[k]);
-            const aVal = JSON.stringify(afterData[k]);
-            if (bVal !== aVal) {
-              diffKeys.add(k);
-              diffData[k] = {
-                old: sanitizeAndTruncate(beforeData[k]),
-                new: sanitizeAndTruncate(afterData[k]),
-              };
-            }
-          }
+        // 若执行前未能提取 recordId，从变更后数据中补全
+        if (!recordId && afterData?.id) {
+          recordId = afterData.id;
+        }
+
+        // 计算字段差异
+        if (beforeData || afterData) {
+          const diffResult = computeFieldDiff(beforeData, afterData);
+          diffData = diffResult.diffData;
+          diffKeys = diffResult.diffKeys;
+          beforeData = diffResult.normalizedBefore;
+          afterData = diffResult.normalizedAfter;
         }
       }
 
       // 如果开启了零差异跳过，且为更新操作但无任何业务字段变化，直接跳过保存
       const zeroDiffSkip = configService.getBoolean(CONFIG_KEYS.AUDIT_ZERO_DIFF_SKIP, true);
-      if (zeroDiffSkip && (actionName === 'update' || method === 'PUT' || method === 'PATCH')) {
+      if (zeroDiffSkip && isUpdateAction) {
         if (beforeData && afterData && diffKeys.size === 0) {
           return;
         }
@@ -236,7 +260,7 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
         (ctx.res as any)?.getHeader?.('x-request-id') ||
         '';
 
-      // 异步存储瘦身后审计日志（仅存储差异相关快照与截断后参数，瘦身 80%~95%）
+      // 异步存储瘦身后审计日志
       const auditPayload = {
         reqId: reqId ? String(reqId) : null,
         userId: currentUser?.id || null,
@@ -285,6 +309,112 @@ async function saveAuditLog(app: Application, payload: any) {
   if (repo) {
     await repo.create({ values: payload });
   }
+}
+
+/**
+ * 标准化与解包 Sequelize Model 实例及响应体数据：
+ * 1. 处理 Sequelize Model 实例（.toJSON(), .dataValues, .get({ plain: true }))
+ * 2. 解包单元素数组 [Model] -> Model
+ * 3. 剥离 Sequelize 内部状态（以 _ 开头的属性、uniqno、isNewRecord 等）
+ */
+function normalizeModelData(data: any): any {
+  if (data === null || data === undefined) return null;
+
+  // 1. 如果包含 toJSON 方法
+  if (typeof data === 'object' && typeof data.toJSON === 'function') {
+    return normalizeModelData(data.toJSON());
+  }
+
+  // 2. 如果是 Sequelize Model 且包含 dataValues
+  if (typeof data === 'object' && data.dataValues && typeof data.dataValues === 'object') {
+    return normalizeModelData(data.dataValues);
+  }
+
+  // 3. 处理包裹层如 { data: ... } 结构
+  if (typeof data === 'object' && !Array.isArray(data) && data.data !== undefined && data.id === undefined) {
+    return normalizeModelData(data.data);
+  }
+
+  // 4. 处理数组结构：单元素数组自动解包为单记录，多元素数组递归标准化
+  if (Array.isArray(data)) {
+    if (data.length === 1) {
+      return normalizeModelData(data[0]);
+    }
+    return data.map((item) => normalizeModelData(item));
+  }
+
+  // 5. 纯对象处理：剔除 Sequelize 内部私有属性
+  if (typeof data === 'object') {
+    const clean: Record<string, any> = {};
+    for (const [key, val] of Object.entries(data)) {
+      if (
+        key.startsWith('_') ||
+        key === 'uniqno' ||
+        key === 'isNewRecord' ||
+        key === 'isMaster' ||
+        typeof val === 'function'
+      ) {
+        continue;
+      }
+      clean[key] = val;
+    }
+    return clean;
+  }
+
+  return data;
+}
+
+/**
+ * 对比前置与后置数据差异
+ */
+function computeFieldDiff(before: any, after: any) {
+  const normalizedBefore = normalizeModelData(before);
+  const normalizedAfter = normalizeModelData(after);
+
+  const diffData: Record<string, any> = {};
+  const diffKeys = new Set<string>();
+
+  if (!normalizedBefore && !normalizedAfter) {
+    return { diffData: null, diffKeys, normalizedBefore: null, normalizedAfter: null };
+  }
+
+  if (
+    normalizedBefore &&
+    typeof normalizedBefore === 'object' &&
+    !Array.isArray(normalizedBefore) &&
+    normalizedAfter &&
+    typeof normalizedAfter === 'object' &&
+    !Array.isArray(normalizedAfter)
+  ) {
+    const allKeys = new Set([...Object.keys(normalizedBefore), ...Object.keys(normalizedAfter)]);
+    for (const k of allKeys) {
+      if (k === 'updatedAt' || k === 'createdAt' || k.startsWith('_')) continue;
+
+      const bRaw = normalizedBefore[k];
+      const aRaw = normalizedAfter[k];
+
+      const bNorm = bRaw === undefined ? null : bRaw;
+      const aNorm = aRaw === undefined ? null : aRaw;
+
+      const bStr = JSON.stringify(bNorm);
+      const aStr = JSON.stringify(aNorm);
+
+      if (bStr !== aStr) {
+        diffKeys.add(k);
+        diffData[k] = {
+          old: sanitizeAndTruncate(bNorm),
+          new: sanitizeAndTruncate(aNorm),
+        };
+      }
+    }
+  }
+
+  return {
+    diffData: Object.keys(diffData).length > 0 ? diffData : null,
+    diffKeys,
+    normalizedBefore,
+    normalizedAfter,
+  };
 }
 
 // 敏感字段脱敏：归一化（小写、去分隔符）后片段匹配，覆盖 apiKey/api_key/clientSecret/Password 等常见变体
@@ -355,12 +485,15 @@ function sanitizeAndTruncate(val: any, maxStrLen = 300, depth = 0): any {
  */
 function extractLeanData(data: any, diffKeys?: Set<string>): any {
   if (!data || typeof data !== 'object') return data;
+  if (Array.isArray(data)) {
+    return data.map((item) => extractLeanData(item, diffKeys));
+  }
 
   const res: Record<string, any> = {};
   const keepKeys = new Set(['id', 'createdAt', 'updatedAt', ...(diffKeys ? Array.from(diffKeys) : [])]);
 
-  // 如果没有指定 diffKeys（如新增或全量快照），限制最多保留前 15 个非空字段
-  const keysToExtract = diffKeys && diffKeys.size > 0 ? Array.from(keepKeys) : Object.keys(data).slice(0, 15);
+  // 如果没有指定 diffKeys（如新增或全量快照），限制最多保留前 20 个非空字段
+  const keysToExtract = diffKeys && diffKeys.size > 0 ? Array.from(keepKeys) : Object.keys(data).slice(0, 20);
 
   for (const k of keysToExtract) {
     if (k in data) {

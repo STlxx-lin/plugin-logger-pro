@@ -171,7 +171,9 @@ export function createAuditLogMiddleware(app: Application, configService: LogCon
                   field.type === 'belongsToMany' ||
                   field.type === 'hasOne' ||
                   field.type === 'belongsTo' ||
-                  field.type === 'array')
+                  field.type === 'array' ||
+                  field.type === 'attachment' ||
+                  field.type === 'attachments')
               ) {
                 appendsToLoad.push(key);
               }
@@ -341,33 +343,38 @@ async function saveAuditLog(app: Application, payload: any) {
  * 2. 解包单元素数组 [Model] -> Model
  * 3. 剥离 Sequelize 内部状态（以 _ 开头的属性、uniqno、isNewRecord 等）
  */
-function normalizeModelData(data: any): any {
+function normalizeModelData(data: any, isRoot = true): any {
   if (data === null || data === undefined) return null;
 
-  // 1. 如果包含 toJSON 方法
+  // 1. 处理 Date 实例或日期对象
+  if (data instanceof Date || (typeof data === 'object' && Object.prototype.toString.call(data) === '[object Date]')) {
+    return isNaN(data.getTime()) ? null : data.toISOString();
+  }
+
+  // 2. 如果包含 toJSON 方法（如 Sequelize Model / Dayjs / Moment 等）
   if (typeof data === 'object' && typeof data.toJSON === 'function') {
-    return normalizeModelData(data.toJSON());
+    return normalizeModelData(data.toJSON(), isRoot);
   }
 
-  // 2. 如果是 Sequelize Model 且包含 dataValues
+  // 3. 如果是 Sequelize Model 且包含 dataValues
   if (typeof data === 'object' && data.dataValues && typeof data.dataValues === 'object') {
-    return normalizeModelData(data.dataValues);
+    return normalizeModelData(data.dataValues, isRoot);
   }
 
-  // 3. 处理包裹层如 { data: ... } 结构
+  // 4. 处理包裹层如 { data: ... } 结构
   if (typeof data === 'object' && !Array.isArray(data) && data.data !== undefined && data.id === undefined) {
-    return normalizeModelData(data.data);
+    return normalizeModelData(data.data, isRoot);
   }
 
-  // 4. 处理数组结构：单元素数组自动解包为单记录，多元素数组递归标准化
+  // 5. 处理数组结构：仅在最顶层且包含单条完整模型时解包，深层关联数组/附件数组保留数组形态
   if (Array.isArray(data)) {
-    if (data.length === 1) {
-      return normalizeModelData(data[0]);
+    if (isRoot && data.length === 1 && typeof data[0] === 'object' && data[0] !== null && ('id' in data[0] || 'dataValues' in data[0])) {
+      return normalizeModelData(data[0], false);
     }
-    return data.map((item) => normalizeModelData(item));
+    return data.map((item) => normalizeModelData(item, false));
   }
 
-  // 5. 纯对象处理：剔除 Sequelize 内部私有属性并递归清洗所有属性值
+  // 6. 纯对象处理：剔除 Sequelize 内部私有属性并递归清洗所有属性值
   if (typeof data === 'object') {
     const clean: Record<string, any> = {};
     for (const [key, val] of Object.entries(data)) {
@@ -380,7 +387,7 @@ function normalizeModelData(data: any): any {
       ) {
         continue;
       }
-      clean[key] = normalizeModelData(val);
+      clean[key] = normalizeModelData(val, false);
     }
     return clean;
   }

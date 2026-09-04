@@ -167,15 +167,40 @@ export function createLoggerProResource(
           await next();
           return;
         }
+
+        const I18N_DICT: Record<string, string> = {
+          'id': 'ID',
+          'ID': 'ID',
+          'Created at': '创建时间',
+          'Updated at': '更新时间',
+          'Created by': '创建人',
+          'Updated by': '更新人',
+          'createdById': '创建人 ID',
+          'updatedById': '更新人 ID',
+          'createdAt': '创建时间',
+          'updatedAt': '更新时间',
+        };
+
+        const parseFieldTitle = (raw: any, fieldName: string): string => {
+          if (typeof raw !== 'string' || !raw.trim()) {
+            return I18N_DICT[fieldName] || fieldName;
+          }
+          const match = raw.match(/\{\{\s*t\(\s*["'](.*?)["']\s*\)\s*\}\}/);
+          if (match && match[1]) {
+            return I18N_DICT[match[1]] || match[1];
+          }
+          return I18N_DICT[raw] || raw;
+        };
+
         const fieldsMap: Record<string, { title: string; type?: string; uiSchema?: any }> = {};
         if (collection.fields) {
           for (const [name, field] of collection.fields.entries()) {
-            const title =
+            const rawTitle =
               (field.options as any)?.uiSchema?.title ||
               (field.options as any)?.title ||
               name;
             fieldsMap[name] = {
-              title,
+              title: parseFieldTitle(rawTitle, name),
               type: field.type || (field.options as any)?.type,
               uiSchema: (field.options as any)?.uiSchema,
             };

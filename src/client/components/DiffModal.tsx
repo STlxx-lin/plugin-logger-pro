@@ -10,14 +10,27 @@ import {
   Space,
   Button,
   Card,
+  Table,
+  Image,
+  Tooltip,
 } from 'antd';
 import {
   SearchOutlined,
   CodeOutlined,
   AppstoreOutlined,
+  TableOutlined,
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   InfoCircleOutlined,
+  PaperClipOutlined,
+  CalendarOutlined,
+  LinkOutlined,
+  FilePdfOutlined,
+  FileExcelOutlined,
+  FileWordOutlined,
+  FileZipOutlined,
+  FileImageOutlined,
+  FileOutlined,
 } from '@ant-design/icons';
 import { useLoggerProAPI } from '../context/LoggerProContext';
 
@@ -31,41 +44,75 @@ interface DiffModalProps {
 // 内存缓存数据表字段元数据，避免重复请求
 const collectionFieldsCache = new Map<string, Record<string, { title: string; type?: string; uiSchema?: any }>>();
 
+// 内置系统字段字典与国际化映射
+const I18N_TITLE_DICT: Record<string, string> = {
+  id: 'ID',
+  ID: 'ID',
+  'Created at': '创建时间',
+  'Updated at': '更新时间',
+  'Created by': '创建人',
+  'Updated by': '更新人',
+  createdAt: '创建时间',
+  updatedAt: '更新时间',
+  createdById: '创建人 ID',
+  updatedById: '更新人 ID',
+};
+
+/**
+ * 解析字段标题，支持 {{t("...")}} 占位符及系统内置别名
+ */
+function parseI18nTitle(rawTitle: any, fieldKey = ''): string {
+  if (typeof rawTitle !== 'string' || !rawTitle.trim()) {
+    return I18N_TITLE_DICT[fieldKey] || fieldKey;
+  }
+  const match = rawTitle.match(/\{\{\s*t\(\s*["'](.*?)["']\s*\)\s*\}\}/);
+  if (match && match[1]) {
+    const key = match[1];
+    return I18N_TITLE_DICT[key] || key;
+  }
+  return I18N_TITLE_DICT[rawTitle] || rawTitle;
+}
+
 /**
  * 递归清洗数据，彻底解包 Sequelize Model 实例及历史脏数据
  */
-function cleanDataDeep(data: any): any {
+function cleanDataDeep(data: any, isRoot = true): any {
   if (data === null || data === undefined) return null;
 
-  // 1. 如果包含 toJSON 方法
+  // 1. 处理 Date 实例
+  if (data instanceof Date || (typeof data === 'object' && Object.prototype.toString.call(data) === '[object Date]')) {
+    return isNaN(data.getTime()) ? null : data.toISOString();
+  }
+
+  // 2. 如果包含 toJSON 方法
   if (typeof data === 'object' && typeof data.toJSON === 'function') {
-    return cleanDataDeep(data.toJSON());
+    return cleanDataDeep(data.toJSON(), isRoot);
   }
 
-  // 2. 如果包含 dataValues 属性
+  // 3. 如果包含 dataValues 属性
   if (typeof data === 'object' && data.dataValues && typeof data.dataValues === 'object') {
-    return cleanDataDeep(data.dataValues);
+    return cleanDataDeep(data.dataValues, isRoot);
   }
 
-  // 3. 处理包裹层如 { data: ... } 结构
+  // 4. 处理包裹层如 { data: ... } 结构
   if (typeof data === 'object' && !Array.isArray(data) && data.data !== undefined && data.id === undefined) {
-    return cleanDataDeep(data.data);
+    return cleanDataDeep(data.data, isRoot);
   }
 
-  // 4. 处理数组结构：单元素解包（若外层包装了单条记录），多元素递归清洗
+  // 5. 数组处理：仅在最顶层且包含单条完整模型时解包，关联子表/附件数组保留数组形态
   if (Array.isArray(data)) {
-    if (data.length === 1 && typeof data[0] === 'object') {
-      return cleanDataDeep(data[0]);
+    if (isRoot && data.length === 1 && typeof data[0] === 'object' && data[0] !== null && ('id' in data[0] || 'dataValues' in data[0])) {
+      return cleanDataDeep(data[0], false);
     }
-    return data.map((item) => cleanDataDeep(item));
+    return data.map((item) => cleanDataDeep(item, false));
   }
 
-  // 5. 纯对象处理
+  // 6. 纯对象处理
   if (typeof data === 'object') {
-    // 检查是否为历史脏结构（例如对象只有一个键名为 '0'，其值为一个未解包的数组或对象）
     const keys = Object.keys(data);
+    // 兼容历史脏结构（例如对象只有一个键名为 '0'）
     if (keys.length === 1 && keys[0] === '0') {
-      return cleanDataDeep(data['0']);
+      return cleanDataDeep(data['0'], false);
     }
 
     const clean: Record<string, any> = {};
@@ -79,13 +126,158 @@ function cleanDataDeep(data: any): any {
       ) {
         continue;
       }
-      clean[key] = cleanDataDeep(val);
+      clean[key] = cleanDataDeep(val, false);
     }
     return clean;
   }
 
   return data;
 }
+
+/**
+ * 识别是否为 ISO 8601 日期时间格式字符串
+ */
+function isIsoDateString(val: any): boolean {
+  if (typeof val !== 'string') return false;
+  return /^\d{4}-\d{2}-\d{2}(T|\s)\d{2}:\d{2}(:\d{2})?(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/.test(val.trim());
+}
+
+/**
+ * 格式化文件大小
+ */
+function formatFileSize(bytes: number): string {
+  if (!bytes || isNaN(bytes)) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * 获取文件类型图标
+ */
+function getFileIcon(filename = '', mimetype = '') {
+  const lower = (filename || mimetype).toLowerCase();
+  if (lower.includes('pdf')) return <FilePdfOutlined style={{ color: '#ff4d4f', fontSize: 16 }} />;
+  if (lower.includes('xls') || lower.includes('csv') || lower.includes('sheet'))
+    return <FileExcelOutlined style={{ color: '#52c41a', fontSize: 16 }} />;
+  if (lower.includes('doc') || lower.includes('word'))
+    return <FileWordOutlined style={{ color: '#1677ff', fontSize: 16 }} />;
+  if (lower.includes('zip') || lower.includes('rar') || lower.includes('tar') || lower.includes('7z'))
+    return <FileZipOutlined style={{ color: '#faad14', fontSize: 16 }} />;
+  if (lower.includes('png') || lower.includes('jpg') || lower.includes('jpeg') || lower.includes('image') || lower.includes('gif'))
+    return <FileImageOutlined style={{ color: '#13c2c2', fontSize: 16 }} />;
+  return <FileOutlined style={{ color: '#8c8c8c', fontSize: 16 }} />;
+}
+
+/**
+ * 判断是否为附件对象
+ */
+function isAttachmentItem(obj: any): boolean {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  return Boolean(
+    (obj.url && typeof obj.url === 'string') ||
+    (obj.filename && typeof obj.filename === 'string') ||
+    (obj.extname && typeof obj.extname === 'string') ||
+    (obj.mimetype && typeof obj.mimetype === 'string')
+  );
+}
+
+/**
+ * 单个附件卡片组件
+ */
+const SingleAttachmentCard: React.FC<{ item: any; type?: 'old' | 'new' | 'neutral' }> = ({ item, type = 'neutral' }) => {
+  const fileName = item.title || item.filename || item.name || '未命名附件';
+  const fileUrl = item.url || '';
+  const isImg =
+    (item.mimetype && item.mimetype.startsWith('image/')) ||
+    /\.(png|jpe?g|gif|webp|svg)$/i.test(fileName) ||
+    /\.(png|jpe?g|gif|webp|svg)$/i.test(fileUrl);
+
+  return (
+    <div
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '4px 10px',
+        background: type === 'old' ? '#fff2f0' : type === 'new' ? '#f6ffed' : '#f5f5f5',
+        border: '1px solid',
+        borderColor: type === 'old' ? '#ffa39e' : type === 'new' ? '#b7eb8f' : '#d9d9d9',
+        borderRadius: 6,
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+      }}
+    >
+      {isImg && fileUrl ? (
+        <Image
+          src={fileUrl}
+          width={28}
+          height={28}
+          style={{ objectFit: 'cover', borderRadius: 4, display: 'block' }}
+          preview={{ mask: false }}
+          fallback="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28'></svg>"
+        />
+      ) : (
+        getFileIcon(fileName, item.mimetype)
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {fileUrl ? (
+            <a
+              href={fileUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: '#1677ff',
+                maxWidth: 220,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                display: 'inline-block',
+              }}
+              title={fileName}
+            >
+              {fileName}
+            </a>
+          ) : (
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: '#262626',
+                maxWidth: 220,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                display: 'inline-block',
+              }}
+              title={fileName}
+            >
+              {fileName}
+            </span>
+          )}
+          {fileUrl && (
+            <a href={fileUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#8c8c8c', fontSize: 11 }}>
+              <LinkOutlined />
+            </a>
+          )}
+        </div>
+        {(item.size || item.extname) && (
+          <span style={{ fontSize: 10, color: '#8c8c8c' }}>
+            {item.extname ? String(item.extname).toUpperCase() : ''}{' '}
+            {item.size ? `(${formatFileSize(Number(item.size))})` : ''}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+
+
 
 /**
  * 复杂对象与关联子表智能可视化渲染组件
@@ -95,7 +287,7 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
   isDiff = false,
   type = 'neutral',
 }) => {
-  const [viewMode, setViewMode] = useState<'card' | 'json'>('card');
+  const [viewMode, setViewMode] = useState<'visual' | 'json'>('visual');
 
   if (value === null || value === undefined) {
     return <span style={{ color: '#bfbfbf', fontStyle: 'italic' }}>(空 / null)</span>;
@@ -105,17 +297,56 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
     return <Tag color={value ? 'green' : 'red'}>{String(value)}</Tag>;
   }
 
+  // 标量字符串与日期检测
+  if (typeof value === 'string') {
+    if (isIsoDateString(value)) {
+      const d = new Date(value);
+      const formatted = isNaN(d.getTime()) ? value : d.toLocaleString();
+      return (
+        <Space size={6} style={{ verticalAlign: 'middle' }}>
+          <CalendarOutlined style={{ color: '#1677ff' }} />
+          <span style={{ fontWeight: 500, color: '#262626' }}>{formatted}</span>
+          <Tooltip title={`原始值: ${value}`}>
+            <Tag style={{ fontSize: 10, padding: '0 4px', color: '#8c8c8c', cursor: 'help' }}>ISO</Tag>
+          </Tooltip>
+        </Space>
+      );
+    }
+    return <span style={{ wordBreak: 'break-all', fontWeight: 500 }}>{value}</span>;
+  }
+
   if (typeof value !== 'object') {
     return <span style={{ fontFamily: 'monospace', wordBreak: 'break-all', fontWeight: 500 }}>{String(value)}</span>;
   }
 
-  // 数组结构（多选标签、关联子表等）
+  // 单个附件对象识别
+  if (isAttachmentItem(value)) {
+    return <SingleAttachmentCard item={value} type={type} />;
+  }
+
+  // 数组结构（标签列表、附件列表、关联子表格等）
   if (Array.isArray(value)) {
     if (value.length === 0) {
       return <span style={{ color: '#bfbfbf', fontStyle: 'italic' }}>[] (空数组)</span>;
     }
 
-    // 简单标量数组（字符串/数字）
+    // 附件数组
+    if (value.every((item) => isAttachmentItem(item))) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+            <PaperClipOutlined style={{ marginRight: 4 }} /> 共 {value.length} 个附件
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {value.map((att, idx) => (
+              <SingleAttachmentCard key={idx} item={att} type={type} />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // 简单标量数组（如 ['VIP', '供应商'] 或 [1, 2, 3]）
     if (value.every((item) => typeof item !== 'object')) {
       return (
         <Space wrap size={[4, 4]}>
@@ -128,7 +359,7 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
       );
     }
 
-    // 关联子表对象数组
+    // 仅包含 ID 的关联记录集合
     const onlyHasIds = value.every(
       (item) => typeof item === 'object' && item && Object.keys(item).filter((k) => k !== 'id' && k !== 'ID' && k !== 'key').length === 0
     );
@@ -136,7 +367,7 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
     if (onlyHasIds) {
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ fontSize: 11, color: '#8c8c8c' }}>📦 包含 {value.length} 条关联记录</div>
+          <div style={{ fontSize: 11, color: '#8c8c8c' }}>📦 包含 {value.length} 条关联 ID</div>
           <Space wrap size={[6, 6]}>
             {value.map((item: any, idx: number) => {
               const displayId = item.id || item.ID || item.key || item;
@@ -155,18 +386,47 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
       );
     }
 
+    // 复合多字段子表格数组 (Sub-Table)
+    const allObjKeys = Array.from(
+      new Set(
+        value.flatMap((item) => (typeof item === 'object' && item ? Object.keys(item) : []))
+      )
+    ).filter((k) => !k.startsWith('_'));
+
+    const columns = [
+      {
+        title: '#',
+        key: '_index',
+        width: 45,
+        render: (_: any, __: any, index: number) => <span style={{ color: '#8c8c8c', fontSize: 11 }}>{index + 1}</span>,
+      },
+      ...allObjKeys.slice(0, 8).map((colKey) => ({
+        title: <span style={{ fontSize: 11 }}>{parseI18nTitle(colKey, colKey)}</span>,
+        dataIndex: colKey,
+        key: colKey,
+        ellipsis: true,
+        render: (cellVal: any) => {
+          if (cellVal === null || cellVal === undefined) return <span style={{ color: '#bfbfbf' }}>-</span>;
+          if (typeof cellVal === 'object') return <span style={{ color: '#1677ff' }}>[Object]</span>;
+          return <span style={{ fontSize: 12 }}>{String(cellVal)}</span>;
+        },
+      })),
+    ];
+
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-          <span style={{ fontSize: 11, color: '#8c8c8c' }}>📦 包含 {value.length} 条关联记录</span>
+          <span style={{ fontSize: 11, color: '#8c8c8c' }}>
+            <TableOutlined style={{ marginRight: 4 }} /> 子表格 (共 {value.length} 行)
+          </span>
           <Button
             size="small"
             type="text"
-            icon={viewMode === 'card' ? <CodeOutlined /> : <AppstoreOutlined />}
-            onClick={() => setViewMode(viewMode === 'card' ? 'json' : 'card')}
+            icon={viewMode === 'visual' ? <CodeOutlined /> : <TableOutlined />}
+            onClick={() => setViewMode(viewMode === 'visual' ? 'json' : 'visual')}
             style={{ fontSize: 11, height: 20, padding: '0 4px' }}
           >
-            {viewMode === 'card' ? 'JSON' : '卡片'}
+            {viewMode === 'visual' ? 'JSON' : '表格'}
           </Button>
         </div>
 
@@ -175,57 +435,40 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
             {JSON.stringify(value, null, 2)}
           </pre>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
-            {value.map((item: any, idx: number) => {
-              if (typeof item !== 'object' || !item) {
-                return <Tag key={idx}>{String(item)}</Tag>;
-              }
-              const displayId = item.id || item.ID || item.key;
-              const otherProps = Object.entries(item).filter(([k]) => k !== 'id' && k !== 'ID' && k !== 'key');
-              return (
-                <Card
-                  key={idx}
-                  size="small"
-                  style={{
-                    fontSize: 12,
-                    border: '1px solid',
-                    borderColor: type === 'old' ? '#ffa39e' : type === 'new' ? '#b7eb8f' : '#d9d9d9',
-                    background: type === 'old' ? '#fff2f0' : type === 'new' ? '#f6ffed' : '#fafafa',
-                  }}
-                  bodyStyle={{ padding: '6px 10px' }}
-                >
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                    {displayId && <Tag color="cyan">#{displayId}</Tag>}
-                    {otherProps.slice(0, 5).map(([k, v]: [string, any]) => (
-                      <span key={k} style={{ fontSize: 12, marginRight: 6 }}>
-                        <span style={{ color: '#8c8c8c' }}>{k}: </span>
-                        <strong style={{ color: '#262626' }}>
-                          {typeof v === 'object' ? (v ? '[Object]' : 'null') : String(v ?? '-')}
-                        </strong>
-                      </span>
-                    ))}
-                  </div>
-                </Card>
-              );
-            })}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 4, overflow: 'hidden' }}>
+            <Table
+              size="small"
+              bordered={false}
+              pagination={false}
+              columns={columns}
+              dataSource={value.map((item, idx) => ({ ...item, _key: idx }))}
+              rowKey="_key"
+              scroll={{ x: 'max-content', y: 160 }}
+              style={{ fontSize: 11 }}
+            />
           </div>
         )}
       </div>
     );
   }
 
-  // 纯复杂对象
+  // 纯复杂对象结构
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    return <span style={{ color: '#bfbfbf', fontStyle: 'italic' }}>{} (空对象)</span>;
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <Button
           size="small"
           type="text"
-          icon={viewMode === 'card' ? <CodeOutlined /> : <AppstoreOutlined />}
-          onClick={() => setViewMode(viewMode === 'card' ? 'json' : 'card')}
+          icon={viewMode === 'visual' ? <CodeOutlined /> : <AppstoreOutlined />}
+          onClick={() => setViewMode(viewMode === 'visual' ? 'json' : 'visual')}
           style={{ fontSize: 11, height: 20, padding: '0 4px' }}
         >
-          {viewMode === 'card' ? 'JSON' : '卡片'}
+          {viewMode === 'visual' ? 'JSON' : '卡片'}
         </Button>
       </div>
       {viewMode === 'json' ? (
@@ -234,10 +477,18 @@ const ComplexDataViewer: React.FC<{ value: any; isDiff?: boolean; type?: 'old' |
         </pre>
       ) : (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {Object.entries(value).map(([k, v]: [string, any]) => (
+          {entries.map(([k, v]: [string, any]) => (
             <Tag key={k} style={{ margin: 0, padding: '2px 6px' }}>
-              <span style={{ color: '#8c8c8c' }}>{k}: </span>
-              <span>{typeof v === 'object' ? JSON.stringify(v) : String(v ?? 'null')}</span>
+              <span style={{ color: '#8c8c8c' }}>{parseI18nTitle(k, k)}: </span>
+              <span>
+                {v === null || v === undefined
+                  ? 'null'
+                  : typeof v === 'object'
+                  ? isIsoDateString(v)
+                    ? new Date(v).toLocaleString()
+                    : JSON.stringify(v)
+                  : String(v)}
+              </span>
             </Tag>
           ))}
         </div>
@@ -366,7 +617,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({ visible, onClose, record, 
   const displayFieldKeys = (viewMode === 'diffOnly' && hasDiff ? changedKeys : allKeys).filter((key) => {
     if (!keyword.trim()) return true;
     const kw = keyword.trim().toLowerCase();
-    const fieldTitle = fieldsMap[key]?.title || '';
+    const fieldTitle = parseI18nTitle(fieldsMap[key]?.title, key);
     const oldValStr = String(beforeObj[key] ?? diff[key]?.old ?? '');
     const newValStr = String(afterObj[key] ?? diff[key]?.new ?? '');
 
@@ -391,7 +642,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({ visible, onClose, record, 
       open={visible}
       onCancel={onClose}
       footer={null}
-      width={920}
+      width={960}
       styles={{ body: { maxHeight: '76vh', overflowY: 'auto', padding: '16px 20px' } }}
     >
       <Spin spinning={loading || fieldsLoading}>
@@ -475,8 +726,8 @@ export const DiffModal: React.FC<DiffModalProps> = ({ visible, onClose, record, 
               <tbody>
                 {displayFieldKeys.length > 0 ? (
                   displayFieldKeys.map((key) => {
-                    const fieldMeta = fieldsMap[key];
-                    const fieldTitle = fieldMeta?.title || key;
+                    const rawFieldTitle = fieldsMap[key]?.title || key;
+                    const fieldTitle = parseI18nTitle(rawFieldTitle, key);
                     const isChanged = key in diff;
 
                     const oldVal = isChanged ? diff[key]?.old : beforeObj[key] ?? afterObj[key];
@@ -560,7 +811,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({ visible, onClose, record, 
               </thead>
               <tbody>
                 {Object.entries(afterObj).map(([key, val]: [string, any]) => {
-                  const fieldTitle = fieldsMap[key]?.title || key;
+                  const fieldTitle = parseI18nTitle(fieldsMap[key]?.title || key, key);
                   return (
                     <tr key={key} style={{ borderBottom: '1px solid #f0f0f0' }}>
                       <td style={{ padding: '8px 12px' }}>
@@ -590,7 +841,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({ visible, onClose, record, 
               </thead>
               <tbody>
                 {Object.entries(beforeObj).map(([key, val]: [string, any]) => {
-                  const fieldTitle = fieldsMap[key]?.title || key;
+                  const fieldTitle = parseI18nTitle(fieldsMap[key]?.title || key, key);
                   return (
                     <tr key={key} style={{ borderBottom: '1px solid #f0f0f0' }}>
                       <td style={{ padding: '8px 12px' }}>

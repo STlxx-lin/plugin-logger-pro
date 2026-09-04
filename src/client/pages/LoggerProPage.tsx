@@ -15,19 +15,12 @@ import { TraceTab } from '../components/TraceTab';
 import { ConfigTab } from '../components/ConfigTab';
 import { AlertTab } from '../components/AlertTab';
 import { LoggerProContext } from '../context/LoggerProContext';
-import { useAPIClient as useV1APIClient } from '../hooks/useAPIClient';
 
 export interface LoggerProPageProps {
   api?: any;
 }
 
-export const LoggerProPage: React.FC<LoggerProPageProps> = ({ api: customApi }) => {
-  let defaultApi: any = null;
-  try {
-    defaultApi = useV1APIClient();
-  } catch {}
-  const api = customApi || defaultApi;
-
+export const LoggerProPage: React.FC<LoggerProPageProps> = ({ api }) => {
   const [activeTab, setActiveTab] = useState('dashboard');
 
   return (

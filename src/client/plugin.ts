@@ -1,5 +1,12 @@
+import React from 'react';
 import { Plugin } from '@nocobase/client';
 import { LoggerProPage } from './pages/LoggerProPage';
+import { useAPIClient as useV1APIClient } from './hooks/useAPIClient';
+
+const V1LoggerProPageWrapper: React.FC = () => {
+  const api = useV1APIClient();
+  return React.createElement(LoggerProPage, { api });
+};
 
 export class PluginLoggerProClient extends Plugin {
   async load() {
@@ -25,7 +32,7 @@ export class PluginLoggerProClient extends Plugin {
         title,
         icon,
         aclSnippet: 'pm',
-        Component: LoggerProPage,
+        Component: V1LoggerProPageWrapper,
       });
 
       const pluginNames = [
@@ -46,7 +53,7 @@ export class PluginLoggerProClient extends Plugin {
         title,
         icon,
         aclSnippet: 'pm',
-        Component: LoggerProPage,
+        Component: V1LoggerProPageWrapper,
       });
     }
   }
